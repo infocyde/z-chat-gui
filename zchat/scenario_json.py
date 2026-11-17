@@ -2,7 +2,10 @@
 
 The format is as plain as it gets. One scenario is an object:
 
-    {"name": "The Gilded Lantern", "description": "A harbor tavern", "system_prompt": "You narrate..."}
+    {"name": "The Gilded Lantern", "description": "A harbor tavern", "categories": ["Fantasy", "Mystery"],
+     "system_prompt": "You narrate..."}
+
+"categories" is optional, and a comma-separated string ("Fantasy, Mystery") is accepted too.
 
 "Export all" is a list of those objects. Import accepts either.
 
@@ -16,6 +19,7 @@ from __future__ import annotations
 import json
 import re
 
+from . import category
 from .models import Scenario
 
 MAX_FILE_BYTES = 5_000_000
@@ -25,7 +29,8 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def to_dict(s: Scenario) -> dict:
-    return {"name": s.name, "description": s.description, "system_prompt": s.system_prompt}
+    return {"name": s.name, "description": s.description, "categories": category.split(s.categories),
+            "system_prompt": s.system_prompt}
 
 
 def dumps(data) -> str:
@@ -59,8 +64,15 @@ def clean(value, max_len: int | None = None, one_line: bool = False) -> str:
     return text[:max_len] if max_len else text
 
 
+def _categories(value) -> str:
+    """A list ["Fantasy", "Horror"] or a string "Fantasy, Horror" -> "Fantasy, Horror"."""
+    if isinstance(value, list):
+        value = ", ".join(clean(v, one_line=True).replace(",", " ") for v in value)
+    return category.clean(clean(value, one_line=True), known=category.COMMON)
+
+
 def parse(raw: bytes) -> list[dict]:
-    """Read an uploaded file into a list of {name, description, system_prompt}. Raises ValueError if it's wrong."""
+    """Read an uploaded file into a list of {name, description, categories, system_prompt}. Raises ValueError if it's wrong."""
     if len(raw) > MAX_FILE_BYTES:
         raise ValueError(f"file is too big (limit {MAX_FILE_BYTES // 1_000_000} MB)")
     try:
@@ -84,6 +96,7 @@ def parse(raw: bytes) -> list[dict]:
         scenarios.append({
             "name": name,
             "description": clean(item.get("description"), 500, one_line=True),
+            "categories": _categories(item.get("categories")),
             "system_prompt": clean(item.get("system_prompt")),
         })
     return scenarios

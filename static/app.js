@@ -23,6 +23,7 @@ function startStream(bubble) {
   setBusy(true);
 
   source.addEventListener("delta", (e) => {
+    if (statusLine) statusLine.textContent = "";  // e.g. "Summarizing the story so far…" is over
     text += JSON.parse(e.data).t;
     if (content) content.textContent = text;
     scrollToBottom();
@@ -39,6 +40,17 @@ function startStream(bubble) {
 
   source.addEventListener("status", (e) => {
     if (statusLine) statusLine.textContent = JSON.parse(e.data).t;
+  });
+
+  // Older messages were just summarized: show the "Story so far" box after the message it covers.
+  source.addEventListener("summary", (e) => {
+    const data = JSON.parse(e.data);
+    document.querySelectorAll(".story-summary").forEach((el) => el.remove());  // only the newest shows
+    const covered = document.getElementById("msg-" + data.mid);
+    if (covered) {
+      covered.insertAdjacentHTML("afterend", data.html);
+      htmx.process(covered.nextElementSibling);  // wire up its Edit / Remove buttons
+    }
   });
 
   // The conversation got a title: refresh the sidebar list and the header.
@@ -168,6 +180,37 @@ document.addEventListener("input", (e) => {
 
 document.addEventListener("change", (e) => {
   if (e.target.id === "file-input") showAttachmentPreview();
+});
+
+// ---------------------------------------------------------------- scenario categories
+
+// The categories box holds "Fantasy, Mystery". Clicking a suggestion button adds or removes that name.
+function categoryList(input) {
+  return input.value.split(",").map((c) => c.trim()).filter((c) => c);
+}
+
+function toggleCategory(button) {
+  const input = document.getElementById("categories-input");
+  const name = button.textContent;
+  const list = categoryList(input);
+  const kept = list.filter((c) => c.toLowerCase() !== name.toLowerCase());
+  if (kept.length === list.length) kept.push(name); // it wasn't there, so add it
+  input.value = kept.join(", ");
+  highlightCategoryButtons();
+}
+
+// Light up the buttons whose category is in the box (also while typing in it).
+function highlightCategoryButtons() {
+  const input = document.getElementById("categories-input");
+  if (!input) return;
+  const chosen = categoryList(input).map((c) => c.toLowerCase());
+  document.querySelectorAll(".tag-btn").forEach((b) => {
+    b.classList.toggle("on", chosen.includes(b.textContent.toLowerCase()));
+  });
+}
+
+document.addEventListener("input", (e) => {
+  if (e.target.id === "categories-input") highlightCategoryButtons();
 });
 
 // ---------------------------------------------------------------- htmx hooks

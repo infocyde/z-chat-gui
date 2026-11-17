@@ -10,3 +10,12 @@ plan_usage:
   refresh_by: replies
   every_replies: 5
   every_seconds: 60
+
+# Long stories. When a chat's context gets big, older messages are replaced by an editable
+# "Story so far" summary, so the story never runs out of room (and requests stay cheaper).
+story_summary:
+  # Summarize before the next reply once the context reaches this many tokens, or 80% of the
+  # model's context window if that is smaller. 0 = only when you press "Summarize".
+  at_tokens: 100000
+  # The newest messages are always sent word for word, never summarized.
+  keep_recent: 10

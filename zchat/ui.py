@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from urllib.parse import quote
 
 from fasthtml.common import (A, Aside, Button, Details, Div, Form, H1, H2, Header, Img, Input, Label, Main,
                              NotStr, Option, P, Select, Small, Span, Summary, Textarea, Title)
 from markdown_it import MarkdownIt
 
-from . import config, pricing
+from . import category, config, pricing
 from .chat import Usage
 from .models import Attachment, Conversation, Message, Scenario
 from .zai import PlanUsage
@@ -276,6 +277,33 @@ def message_view(m: Message, branch: Branch | None = None):
         data_mid=m.id)
 
 
+def summary_view(m: Message):
+    """The "Story so far" box, shown after the last message it covers."""
+    return Details(
+        Summary(icon("book", 15), Span("Story so far"),
+                Small("Everything above is sent to the model as this summary, not word for word.",
+                      cls="muted")),
+        Div(markdown(m.summary), cls="content md"),
+        Div(Button(icon("edit", 15), "Edit", type="button", cls="btn btn-ghost",
+                   hx_get=f"/summary_form?mid={m.id}", hx_target=f"#summary-{m.id}", hx_swap="outerHTML"),
+            Button(icon("trash", 15), "Remove", type="button", cls="btn btn-ghost",
+                   hx_post=f"/summary_remove?mid={m.id}", hx_target="#messages",
+                   hx_confirm="Remove this summary? The messages above will be sent in full again."),
+            cls="row gap end"),
+        id=f"summary-{m.id}", cls="story-summary")
+
+
+def summary_form(m: Message):
+    return Form(
+        Textarea(m.summary, name="summary", rows=16, required=True, cls="textarea"),
+        Div(Button("Cancel", type="button", cls="btn btn-ghost", hx_get=f"/summary?mid={m.id}",
+                   hx_target=f"#summary-{m.id}", hx_swap="outerHTML"),
+            Button("Save", type="submit", cls="btn btn-primary"),
+            cls="row gap end"),
+        hx_post=f"/summary?mid={m.id}", hx_swap="outerHTML",
+        id=f"summary-{m.id}", cls="story-summary stack tight")
+
+
 def edit_form(m: Message):
     hint = "Saving creates a new branch and a new reply." if m.role == "user" else "Edits this reply in place."
     return Form(
@@ -394,6 +422,11 @@ def stats_view(conv: Conversation, usage: Usage, ctx_used: int, ctx_model: str |
              cls="spend",
              title=f"This chat, all branches: prompt {usage.prompt:,} (cached {usage.cached:,}), "
                    f"completion {usage.completion:,}, {usage.images} images"),
+        Button(Span("Summarize", cls="idle-label"), Span("Summarizing…", cls="busy-label"),
+               type="button", cls="pill-btn summarize-btn", hx_post=f"/summarize?cid={conv.id}",
+               hx_target="#messages", hx_disabled_elt="this",
+               title="Summarize older messages into a \"Story so far\" now. It also happens by itself "
+                     "when the context gets big."),
         id="chat-stats", cls="chat-stats", hx_swap_oob="true" if oob else None)
 
 
@@ -460,11 +493,25 @@ def new_chat_page(scenarios: list[Scenario], scenario: Scenario | None):
 # ---------------------------------------------------------------- scenarios
 
 
-def scenarios_page(scenarios: list[Scenario]):
+def category_tags(s: Scenario):
+    """A scenario's categories as small tags; clicking one searches for it.
+
+    Every card gets this row, so the cards line up; one without categories gets a link to add some.
+    """
+    names = category.split(s.categories)
+    if not names:
+        return Div(A("+ Add categories", href=f"/scenarios/edit?sid={s.id}", cls="tag tag-empty",
+                     title="No categories yet. Open the editor to add some."), cls="tags")
+    return Div(*[A(name, href=f"/scenarios?q={quote(name)}", cls="tag", title=f"Show {name} scenarios")
+                 for name in names], cls="tags")
+
+
+def scenarios_page(scenarios: list[Scenario], q: str = ""):
     cards = [Div(
         Div(Div(H2(s.name), Input(type="checkbox", name="sid", value=s.id, cls="pick",
                                   title="Select for export", aria_label=f"Select {s.name} for export"),
                 cls="row between"),
+            category_tags(s),
             P(s.description, cls="muted") if s.description else None,
             P(s.system_prompt[:220] + ("…" if len(s.system_prompt) > 220 else ""), cls="preview"),
             cls="card-body"),
@@ -474,7 +521,9 @@ def scenarios_page(scenarios: list[Scenario]):
                 cls="row gap"),
             cls="row between"),
         cls="card") for s in scenarios]
-    if not cards:
+    if not cards and q:
+        cards = [Div(P(f"No scenarios match “{q}”."), cls="card empty")]
+    elif not cards:
         cards = [Div(P("No scenarios yet. A scenario is a reusable system prompt: a setting, a character, "
                        "a set of rules for a campaign."), cls="card empty")]
     # Import: picking files submits the form straight away (several files at once is fine).
@@ -493,7 +542,15 @@ def scenarios_page(scenarios: list[Scenario]):
                 A(icon("plus"), "New scenario", href="/scenarios/edit", cls="btn btn-primary"),
                 cls="row gap"),
             cls="row between page-head"),
-        Form(Div(*cards, cls="card-grid"), id="export-form", action="/scenarios/export", method="get"),
+        # Typing asks for the whole page again (?q=...), but only the cards are swapped in (hx-select),
+        # so the box keeps focus. The URL updates too, so reload and Back keep the search.
+        Input(type="search", name="q", value=q, cls="input search-input", aria_label="Search scenarios",
+              placeholder="Search names, categories and text…", autocomplete="off",
+              hx_get="/scenarios", hx_trigger="input changed delay:250ms, search",
+              hx_target="#scenario-cards", hx_select="#scenario-cards", hx_swap="outerHTML",
+              hx_push_url="true"),
+        Form(Div(*cards, id="scenario-cards", cls="card-grid"), id="export-form", action="/scenarios/export",
+             method="get"),
         id="scenarios-page", cls="page")
 
 
@@ -513,7 +570,20 @@ def clone_scenario_btn(s: Scenario):
                   hx_post=f"/scenarios/clone?sid={s.id}")
 
 
-def scenario_editor(s: Scenario | None):
+def category_picker(current: str, known: list[str]):
+    """Text box for categories, plus one-click buttons for common and already-used ones (see app.js)."""
+    chosen = [c.lower() for c in category.split(current)]
+    buttons = [Button(name, type="button", cls="tag-btn" + (" on" if name.lower() in chosen else ""),
+                      onclick="toggleCategory(this)") for name in known]
+    return Div(
+        Label("Categories",
+              Input(name="categories", id="categories-input", value=current, cls="input", autocomplete="off",
+                    placeholder="Comma separated, e.g. Fantasy, Mystery. Leave empty and the AI picks on save.")),
+        Div(*buttons, cls="tags"),
+        cls="stack tight")
+
+
+def scenario_editor(s: Scenario | None, known_categories: list[str]):
     return Div(
         Div(H1("Edit scenario" if s else "New scenario"), A("Back", href="/scenarios", cls="btn btn-ghost"),
             cls="row between page-head"),
@@ -521,6 +591,7 @@ def scenario_editor(s: Scenario | None):
             Label("Name", Input(name="name", value=s.name if s else "", required=True, cls="input")),
             Label("Short description", Input(name="description", value=s.description if s else "", cls="input",
                                              placeholder="Optional one-liner shown on the card")),
+            category_picker(s.categories if s else "", known_categories),
             Label("System prompt", Textarea(s.system_prompt if s else "", name="system_prompt", rows=18,
                                             cls="textarea mono")),
             Input(type="hidden", name="sid", value=s.id if s else ""),
@@ -534,5 +605,6 @@ def scenario_editor(s: Scenario | None):
                 Div(A("Start chat", href=f"/?scenario={s.id}", cls="btn btn-ghost") if s else None,
                     Button("Save", type="submit", cls="btn btn-primary"), cls="row gap"),
                 cls="row between"),
-            hx_post="/scenarios/save", cls="stack"),
+            # Saving can take a few seconds when the AI picks categories; stop double-clicks meanwhile.
+            hx_post="/scenarios/save", hx_disabled_elt="find button[type='submit']", cls="stack"),
         cls="page narrow")

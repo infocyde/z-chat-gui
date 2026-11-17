@@ -130,8 +130,8 @@ def fork(s: Session, conv: Conversation, upto: Message) -> Conversation:
         if m.status in ("pending", "streaming"):
             break
         c = Message(conversation_id=new.id, parent_id=parent, role=m.role, kind=m.kind, content=m.content,
-                    reasoning=m.reasoning, model=m.model, status=m.status, error=m.error,
-                    created_at=m.created_at)
+                    reasoning=m.reasoning, summary=m.summary, model=m.model, status=m.status,
+                    error=m.error, created_at=m.created_at)
         s.add(c)
         s.flush()
         copy_attachments(s, m, c)
@@ -180,17 +180,36 @@ def assistant_content(m: Message) -> str | None:
     return m.content or None
 
 
+SUMMARY_HEADING = "## Story so far\n(The earlier part of this conversation, summarized. It continues below.)\n\n"
+
+
+def latest_summary(path: list[Message]) -> Message | None:
+    """The newest message on the branch carrying a "Story so far" summary, if any."""
+    for m in reversed(path):
+        if m.summary:
+            return m
+    return None
+
+
 def build_messages(conv: Conversation, path: list[Message], model_id: str) -> list[dict]:
     """Chat-completions `messages` for the given branch (excluding the pending reply itself).
 
     The prefix is deterministic for a given branch, so Z.ai's automatic context cache can hit.
     Images are only sent as pixels to vision models, and only for the newest user turn, to keep
     old base64 blobs from bloating every request.
+
+    If the branch has a "Story so far" summary, it goes after the system prompt and only the
+    messages after it are sent.
     """
     vision = config.model_info(model_id).vision
+    system = conv.system_prompt.strip()
+    checkpoint = latest_summary(path)
+    if checkpoint:
+        system = (system + "\n\n" if system else "") + SUMMARY_HEADING + checkpoint.summary
+        path = path[path.index(checkpoint) + 1:]
     out: list[dict] = []
-    if conv.system_prompt.strip():
-        out.append({"role": "system", "content": conv.system_prompt.strip()})
+    if system:
+        out.append({"role": "system", "content": system})
     last_user_idx = max((i for i, m in enumerate(path) if m.role == "user"), default=-1)
     for i, m in enumerate(path):
         if m.role == "user":

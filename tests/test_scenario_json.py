@@ -7,7 +7,7 @@ from zchat import scenario_json
 
 def test_parse_accepts_one_object_or_a_list():
     one = scenario_json.parse(b'{"name": "Tavern", "system_prompt": "You narrate."}')
-    assert one == [{"name": "Tavern", "description": "", "system_prompt": "You narrate."}]
+    assert one == [{"name": "Tavern", "description": "", "categories": "", "system_prompt": "You narrate."}]
     many = scenario_json.parse(b'[{"name": "A"}, {"name": "B", "description": "two"}]')
     assert [s["name"] for s in many] == ["A", "B"]
 
@@ -48,10 +48,23 @@ def test_parse_rejects_bad_files_with_a_message(raw, message):
 
 
 def test_export_is_plain_ascii_and_round_trips():
-    data = {"name": "Café ☕ \"quoted\"", "description": "", "system_prompt": "Ünïcode\nlines"}
+    data = {"name": "Café ☕ \"quoted\"", "description": "", "categories": ["Sci-Fi", "Café"],
+            "system_prompt": "Ünïcode\nlines"}
     text = scenario_json.dumps(data)
     assert text.isascii()
-    assert scenario_json.parse(text.encode()) == [data]
+    assert scenario_json.parse(text.encode()) == [{**data, "categories": "Sci-Fi, Café"}]
+
+
+@pytest.mark.parametrize("value, expected", [
+    (["fantasy", " Horror ", "fantasy"], "Fantasy, Horror"),  # tidied, repeats dropped, known spelling
+    ("sci-fi,  Space   Opera ,", "Sci-Fi, Space Opera"),     # a comma-separated string works too
+    (["Has, comma"], "Has comma"),                            # a comma inside a list item isn't a split
+    (None, ""),
+    (42, "42"),
+])
+def test_parse_reads_categories_as_a_list_or_a_string(value, expected):
+    raw = json.dumps({"name": "X", "categories": value}).encode()
+    assert scenario_json.parse(raw)[0]["categories"] == expected
 
 
 def test_filename_and_unique_name():

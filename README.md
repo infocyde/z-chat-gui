@@ -4,8 +4,10 @@ A personal web chat client for [Z.ai](https://docs.z.ai) (GLM models), built wit
 
 - **Chats** stream replies with optional "thinking" shown in a collapsible box.
 - **Branching:** editing one of your messages or regenerating a reply creates a new branch (`‹ 2/3 ›`); nothing is overwritten. **Fork** copies a chat up to any message into a new chat. Assistant replies can be edited in place to steer a story.
+- **Long stories (Story so far):** when a chat's context reaches 100k tokens (or 80% of the model's window, if smaller), the older messages are summarized before the next reply, and from then on the summary is sent instead of them. The newest 10 messages are always sent word for word. The summary shows as a "Story so far" box in the chat, where you can edit or remove it; the **Summarize** button in the header does it on demand. Each new summary builds on the previous one. It's saved on the last message it covers, so branches split off earlier don't see it and forks keep it. Both numbers are in `config.yaml`. Summary calls aren't counted in the token totals.
 - **Models:** pick per chat and switch at any time; each reply records which model wrote it.
 - **Scenarios:** reusable system prompts, managed on the Scenarios tab and picked on the new-chat page. You can also type a one-off system prompt.
+- **Categories & search:** each scenario has comma-separated categories (Fantasy, Mystery, …). The editor offers common ones and every one you've used as one-click buttons; leave the box empty and the AI picks 1–3 when you save. The search box on the Scenarios page matches names, categories, descriptions and prompt text (every word must match); clicking a category tag on a card searches for it.
 - **Images:** the *Image* toggle sends your text to `glm-image`; *Illustrate* writes an image prompt from the current scene. Images are downloaded to `image_output/` and shown in the chat (Z.ai's links expire after 30 days).
 - **Documents:** attach PDF, DOCX, text/markdown, or images. Text is extracted locally; scanned PDFs fall back to `glm-ocr`. Images go to a vision model (switches to the free GLM-4.6V Flash automatically if needed).
 - **Tokens:** per-reply input / cached / output counts, per-chat totals with estimated cost, a context-window bar, and an all-time total in the sidebar.
@@ -77,6 +79,8 @@ Tests use a temporary database (built through the real migrations) and fake the 
 | `zchat/chat.py` | Conversation tree logic, building the API `messages`, token/cost totals |
 | `zchat/generate.py` | Runs a pending reply (text or image) and yields progress events |
 | `zchat/zai.py` | Z.ai HTTP client: streaming chat, image generation, OCR, Coding Plan quota |
+| `zchat/story.py` | Story so far: when to summarize, what to summarize, and saving the summary |
+| `zchat/category.py` | Scenario categories: the common list, tidying typed ones, asking the AI to pick |
 | `zchat/scenario_json.py` | Scenario import/export: the JSON format and cleanup of imported text |
 | `zchat/pricing.py` | Per-token prices, read daily from the docs pricing page (cached in `data/prices.json`) |
 | `zchat/documents.py` | Upload handling and text extraction |
@@ -94,7 +98,8 @@ Tests use a temporary database (built through the real migrations) and fake the 
 
 On the Scenarios page: **Export** downloads the checked scenarios (all of them if none are checked), the
 download icon on a card exports just that one, and **Import** takes one or more `.json` files. The format
-is plain: one scenario is `{"name": "...", "description": "...", "system_prompt": "..."}` and several
+is plain: one scenario is `{"name": "...", "description": "...", "categories": ["..."], "system_prompt": "..."}`
+(categories optional) and several
 are a list of those. Imports never overwrite: a name that already exists becomes "Name (2)". Files in
 UTF-8, UTF-16 or old Windows encodings all work; invisible control characters are removed.
 

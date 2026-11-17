@@ -111,14 +111,15 @@ async def stream_chat(messages: list[dict], model: str, thinking: bool = False,
                         yield StreamEvent("finish", choice["finish_reason"])
 
 
-async def complete(messages: list[dict], model: str = config.UTILITY_MODEL, max_tokens: int = 300) -> str:
-    """One-shot, non-streaming completion (titles, image prompts)."""
+async def complete(messages: list[dict], model: str = config.UTILITY_MODEL, max_tokens: int = 300,
+                   timeout: float = 60) -> str:
+    """One-shot, non-streaming completion (titles, image prompts, story summaries)."""
     if config.model_info(model).thinking == "always":
         # These models reason before answering and the reasoning counts toward max_tokens,
         # so leave room for it or the answer comes back empty.
         max_tokens += 2000
     body = chat_body(messages, model, thinking=False, temperature=None, stream=False, max_tokens=max_tokens)
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.post(f"{config.ZAI_BASE_URL}/chat/completions", headers=_headers(), json=body)
     if r.status_code != 200:
         _raise_for(r.status_code, r.content)

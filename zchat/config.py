@@ -43,6 +43,10 @@ if PLAN_REFRESH_BY not in ("replies", "seconds"):
     raise ValueError(f"{SETTINGS_FILE}: plan_usage.refresh_by must be 'replies' or 'seconds', "
                      f"not {PLAN_REFRESH_BY!r}")
 
+_summary = _settings.get("story_summary") or {}
+SUMMARY_AT_TOKENS = max(0, int(_summary.get("at_tokens", 100_000)))  # 0 = never automatically
+SUMMARY_KEEP_RECENT = max(2, int(_summary.get("keep_recent", 10)))
+
 DATA_DIR = Path(os.environ.get("ZCHAT_DATA_DIR", ROOT / "data"))
 DB_PATH = DATA_DIR / "zchat.db"
 DATABASE_URL = os.environ.get("ZCHAT_DATABASE_URL", f"sqlite:///{DB_PATH.as_posix()}")

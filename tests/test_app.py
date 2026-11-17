@@ -227,7 +227,8 @@ def test_export_and_import_scenarios(client):
     from zchat.db import session_scope
     from zchat.models import Scenario
 
-    client.post("/scenarios/save", data={"name": "Export Me ☕", "system_prompt": "Prompt one."})
+    client.post("/scenarios/save", data={"name": "Export Me ☕", "system_prompt": "Prompt one.",
+                                         "categories": "Drama"})
     client.post("/scenarios/save", data={"name": "Export Me Too", "system_prompt": "Prompt two."})
     with session_scope() as s:
         ids = {sc.name: sc.id for sc in s.scalars(select(Scenario).where(Scenario.name.like("Export Me%")))}
@@ -235,7 +236,8 @@ def test_export_and_import_scenarios(client):
     # One -> an object, named after the scenario
     r = client.get(f"/scenarios/export?sid={ids['Export Me ☕']}")
     assert 'filename="export-me.json"' in r.headers["content-disposition"]
-    assert json.loads(r.text) == {"name": "Export Me ☕", "description": "", "system_prompt": "Prompt one."}
+    assert json.loads(r.text) == {"name": "Export Me ☕", "description": "", "categories": ["Drama"],
+                                  "system_prompt": "Prompt one."}
 
     # Several -> a list; none -> all
     two = json.loads(client.get(f"/scenarios/export?sid={ids['Export Me ☕']}&sid={ids['Export Me Too']}").text)
@@ -250,3 +252,127 @@ def test_export_and_import_scenarios(client):
     r = client.post("/scenarios/import", files=files, headers={"HX-Request": "true"})
     assert "Imported 3 scenarios" in r.text and "broken.json: not valid JSON" in r.text
     assert "Export Me ☕ (2)" in r.text and "Fresh" in r.text  # clashing names don't overwrite
+
+
+def scenario_named(name):
+    from sqlalchemy import select
+
+    from zchat.db import session_scope
+    from zchat.models import Scenario
+
+    with session_scope() as s:
+        return s.scalar(select(Scenario).where(Scenario.name == name))
+
+
+def test_scenario_categories_typed_and_suggested(client):
+    # Typed categories are tidied: trimmed, repeats dropped, spelled like the common ones.
+    client.post("/scenarios/save", data={"name": "Cat Typed", "system_prompt": "x",
+                                         "categories": " sci-fi, Space  Opera ,SCI-FI,"})
+    assert scenario_named("Cat Typed").categories == "Sci-Fi, Space Opera"
+
+    # The editor offers common categories and ones already used, with the scenario's own lit up.
+    page = client.get(f"/scenarios/edit?sid={scenario_named('Cat Typed').id}").text
+    assert 'value="Sci-Fi, Space Opera"' in page
+    assert re.search(r'class="tag-btn on"[^>]*>Space Opera<', page)
+    assert re.search(r'class="tag-btn"[^>]*>Horror<', page)
+
+    # The scenarios page shows them as tags that search for that category.
+    assert 'href="/scenarios?q=Space%20Opera"' in client.get("/scenarios").text
+
+
+def test_empty_categories_are_picked_by_the_ai(client, monkeypatch):
+    asked = []
+
+    async def fake_complete(messages, model=None, max_tokens=0):
+        asked.append(messages[0]["content"])
+        return "horror, Mystery."
+
+    monkeypatch.setattr(zai, "complete", fake_complete)
+    client.post("/scenarios/save", data={"name": "Cat Auto", "system_prompt": "A haunted lighthouse."})
+    assert scenario_named("Cat Auto").categories == "Horror, Mystery"
+    assert "haunted lighthouse" in asked[0]
+
+    # A chatty reply instead of a list is ignored rather than saved.
+    async def chatty(messages, model=None, max_tokens=0):
+        return "Sure! I think this scenario would best fit into the category of gothic horror fiction overall"
+
+    monkeypatch.setattr(zai, "complete", chatty)
+    client.post("/scenarios/save", data={"name": "Cat Chatty", "system_prompt": "Fog."})
+    assert scenario_named("Cat Chatty").categories == ""
+
+    # Nothing to go on (no prompt, no description): no AI call at all.
+    asked.clear()
+    monkeypatch.setattr(zai, "complete", fake_complete)
+    client.post("/scenarios/save", data={"name": "Cat Blank"})
+    assert asked == [] and scenario_named("Cat Blank").categories == ""
+
+    # Its card still gets a categories line: a link to add some.
+    blank_id = scenario_named("Cat Blank").id
+    assert f'href="/scenarios/edit?sid={blank_id}" class="tag tag-empty"' in client.get("/scenarios").text
+
+
+def test_search_scenarios(client):
+    client.post("/scenarios/save", data={"name": "Search Lighthouse", "categories": "Horror",
+                                         "system_prompt": "A keeper hears knocking at 100% volume."})
+    client.post("/scenarios/save", data={"name": "Search Starship", "categories": "Sci-Fi",
+                                         "description": "Bridge crew drama", "system_prompt": "Captain."})
+
+    def found(q):
+        page = client.get("/scenarios", params={"q": q}).text
+        return [name for name in ("Search Lighthouse", "Search Starship") if name in page]
+
+    assert found("lighthouse") == ["Search Lighthouse"]           # name, any case
+    assert found("sci-fi") == ["Search Starship"]                 # category
+    assert found("knocking") == ["Search Lighthouse"]             # prompt text
+    assert found("bridge") == ["Search Starship"]                 # description
+    assert found("search") == ["Search Lighthouse", "Search Starship"]
+    assert found("search horror") == ["Search Lighthouse"]        # every word must match
+    assert found("100%") == ["Search Lighthouse"]                 # % is a character, not a wildcard
+    assert found("1_0") == []                                     # so is _
+    page = client.get("/scenarios", params={"q": "zzz-nothing"}).text
+    assert "No scenarios match" in page and 'value="zzz-nothing"' in page
+
+
+def test_summarize_button_edit_and_remove(client, monkeypatch):
+    from zchat import config
+    from zchat.db import session_scope
+    from zchat.models import Message
+
+    monkeypatch.setattr(config, "SUMMARY_KEEP_RECENT", 2)
+    r = client.post("/new", data={"content": "I walk in.", "model": "glm-4.7-flash"},
+                    headers={"HX-Request": "true"})
+    cid = re.search(r"/c/(\d+)", r.headers["HX-Redirect"]).group(1)
+    first_reply = int(re.search(r'data-stream-url="/stream\?mid=(\d+)"', client.get(f"/c/{cid}").text).group(1))
+    client.get(f"/stream?mid={first_reply}")
+
+    # One exchange: nothing to summarize yet.
+    r = client.post(f"/summarize?cid={cid}", headers={"HX-Request": "true"})
+    assert "Nothing new to summarize" in r.text
+
+    # A second exchange; now the first one can be summarized.
+    r = client.post(f"/send?cid={cid}", data={"content": "I order a drink."}, headers={"HX-Request": "true"})
+    second_reply = re.search(r'data-stream-url="/stream\?mid=(\d+)"', r.text).group(1)
+    client.get(f"/stream?mid={second_reply}")
+
+    async def fake_complete(messages, model=None, max_tokens=0, timeout=0):
+        return "**Arrived** at the tavern."
+
+    monkeypatch.setattr(zai, "complete", fake_complete)
+    r = client.post(f"/summarize?cid={cid}", headers={"HX-Request": "true"})
+    assert "Story so far" in r.text and "<strong>Arrived</strong>" in r.text
+    assert f'id="summary-{first_reply}"' in r.text  # saved on the first reply
+    assert f'id="summary-{first_reply}"' in client.get(f"/c/{cid}").text  # and shown on the page
+
+    # Edit it
+    assert "Arrived" in client.get(f"/summary_form?mid={first_reply}").text
+    r = client.post(f"/summary?mid={first_reply}", data={"summary": "Edited summary."},
+                    headers={"HX-Request": "true"})
+    assert "Edited summary." in r.text
+    with session_scope() as s:
+        assert s.get(Message, first_reply).summary == "Edited summary."
+
+    # Remove it
+    r = client.post(f"/summary_remove?mid={first_reply}", headers={"HX-Request": "true"})
+    assert 'id="summary-' not in r.text
+    with session_scope() as s:
+        assert s.get(Message, first_reply).summary == ""

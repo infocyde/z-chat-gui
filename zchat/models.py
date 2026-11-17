@@ -30,6 +30,8 @@ class Scenario(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str] = mapped_column(String(500), default="")
+    # Comma-separated, e.g. "Fantasy, Mystery" (see category.py)
+    categories: Mapped[str] = mapped_column(String(300), default="", server_default="")
     system_prompt: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
@@ -74,6 +76,9 @@ class Message(Base):
     kind: Mapped[str] = mapped_column(String(16), default="text")
     content: Mapped[str] = mapped_column(Text, default="")
     reasoning: Mapped[str] = mapped_column(Text, default="")
+    # "Story so far": a summary of the branch from the start up to and including this message.
+    # Replies after it are sent this summary instead of those older messages (see story.py).
+    summary: Mapped[str] = mapped_column(Text, default="", server_default="")
     model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # done | pending | streaming | stopped | error
     status: Mapped[str] = mapped_column(String(16), default="done")

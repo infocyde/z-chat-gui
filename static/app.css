@@ -288,6 +288,22 @@ label.btn { flex-direction: row; font-size: 0.9rem; color: var(--text); }  /* a 
 .error-box { background: var(--danger-soft); color: var(--danger); border: 1px solid var(--danger-soft); border-radius: var(--radius-sm); padding: 10px 14px; font-size: 0.88rem; margin-top: 6px; }
 .note { font-size: 0.8rem; color: var(--text-muted); margin-top: 6px; }
 
+/* "Story so far" box between messages, and the Summarize button in the header */
+.story-summary {
+  border: 1px dashed var(--accent); border-radius: var(--radius); background: var(--accent-soft);
+  padding: 10px 14px;
+}
+.story-summary > summary {
+  cursor: pointer; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-weight: 600; color: var(--accent);
+}
+.story-summary > summary small { font-weight: 400; font-size: 0.78rem; }
+.story-summary[open] > summary { margin-bottom: 8px; }
+.story-summary .content { font-size: 0.9rem; }
+.summarize-btn { margin-left: auto; }
+.summarize-btn .busy-label, .summarize-btn.htmx-request .idle-label { display: none; }
+.summarize-btn.htmx-request .busy-label { display: inline; }
+
 .msg.editing { align-items: stretch; gap: 8px; }
 .edit-area { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--accent); border-radius: var(--radius); padding: 12px 14px; resize: vertical; outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
 
@@ -355,6 +371,27 @@ body.busy #send-btn { display: none; }
 .card .preview { font-size: 0.85rem; color: var(--text-muted); white-space: pre-wrap; }
 .card .pick { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; flex: none; }
 .card.empty { grid-column: 1 / -1; color: var(--text-muted); }
+.search-input { margin-bottom: 20px; max-width: 420px; }
+
+/* scenario categories: tags on cards, toggle buttons in the editor */
+.stack.tight { gap: 8px; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; min-height: 20px; }  /* always at least one line */
+.card .tags { margin-bottom: 6px; }  /* a little air before the description */
+.tag {
+  font-size: 0.72rem; font-weight: 600; color: var(--accent); background: var(--accent-soft);
+  padding: 0 8px; border: 1px solid transparent; border-radius: 999px; white-space: nowrap;
+}
+.tag:hover { background: var(--accent); color: #fff; }
+/* placeholder on cards with no categories: same size as a tag, but quiet */
+.tag.tag-empty { color: var(--text-muted); background: transparent; border: 1px dashed var(--border); }
+.tag.tag-empty:hover { color: var(--accent); border-color: var(--accent); }
+.tag-btn {
+  font: inherit; font-size: 0.78rem; cursor: pointer; padding: 3px 10px; border-radius: 999px;
+  background: transparent; border: 1px solid var(--border); color: var(--text-muted);
+}
+.tag-btn:hover { color: var(--text); background: var(--surface-hover); }
+.tag-btn.on { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+.btn:disabled { opacity: 0.6; cursor: wait; }
 
 /* ---------------------------------------------------------------- toasts */
 

@@ -12,10 +12,10 @@ from datetime import datetime, timedelta
 import httpx
 from fasthtml.common import (Div, FileResponse, Link, Meta, P, Redirect, Response, Script, Span,
                              StreamingResponse, fast_app, serve, to_xml)
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from zchat import chat, config, documents, generate, pricing, scenario_json, ui, zai
+from zchat import category, chat, config, documents, generate, pricing, scenario_json, story, ui, zai
 from zchat.db import session_scope, upgrade_db
 from zchat.models import Attachment, Conversation, Message, Scenario, utcnow
 
@@ -70,6 +70,30 @@ def all_scenarios(s: Session) -> list[Scenario]:
     return list(s.scalars(select(Scenario).order_by(Scenario.name)))
 
 
+def search_scenarios(s: Session, q: str) -> list[Scenario]:
+    """Scenarios where every word of `q` appears in the name, categories, description or prompt text."""
+    query = select(Scenario).order_by(Scenario.name)
+    for word in q.split():
+        # Escape LIKE's wildcards so searching for "100%" or "_" finds those characters literally.
+        word = word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{word}%"
+        query = query.where(or_(Scenario.name.ilike(pattern, escape="\\"),
+                                Scenario.categories.ilike(pattern, escape="\\"),
+                                Scenario.description.ilike(pattern, escape="\\"),
+                                Scenario.system_prompt.ilike(pattern, escape="\\")))
+    return list(s.scalars(query))
+
+
+def known_categories(s: Session) -> list[str]:
+    """The common starter categories plus every category already used on a scenario."""
+    names = list(category.COMMON)
+    for text in s.scalars(select(Scenario.categories)):
+        for name in category.split(text):
+            if name.lower() not in [n.lower() for n in names]:
+                names.append(name)
+    return names
+
+
 def sidebar(s: Session, active: str = "chats", conv_id: int | None = None):
     return ui.sidebar(recent_conversations(s), active, conv_id, chat.usage_for(s))
 
@@ -88,7 +112,15 @@ def render_message(s: Session, m: Message):
 
 
 def render_messages(s: Session, conv: Conversation) -> list:
-    return [render_message(s, m) for m in chat.active_path(s, conv)]
+    """The active branch, with the "Story so far" box right after the message it summarizes up to."""
+    path = chat.active_path(s, conv)
+    checkpoint = chat.latest_summary(path)
+    out = []
+    for m in path:
+        out.append(render_message(s, m))
+        if m is checkpoint:
+            out.append(ui.summary_view(m))
+    return out
 
 
 def render_stats(s: Session, conv: Conversation, oob: bool = False):
@@ -229,6 +261,10 @@ async def stream(mid: int):
         async for name, data in generate.run(mid):
             if name in ("delta", "reasoning", "status"):
                 yield sse(name, data)
+            elif name == "summary":
+                with session_scope() as s:
+                    html = to_xml(ui.summary_view(s.get(Message, data["mid"])))
+                yield sse("summary", {"mid": data["mid"], "html": html})
             elif name == "title":
                 with session_scope() as s:
                     conv = s.get(Message, mid).conversation
@@ -300,6 +336,57 @@ def fork(mid: int):
         new = chat.fork(s, m.conversation, m)
         new_id = new.id
     return Redirect(f"/c/{new_id}")
+
+
+# ---------------------------------------------------------------- story so far (see zchat/story.py)
+
+
+@app.post("/summarize")
+async def summarize_now(cid: int):
+    """The "Summarize" button: summarize older messages now instead of waiting for the context to fill."""
+    with session_scope() as s:
+        leaf_id = get_conv(s, cid).active_leaf_id
+    try:
+        summary_on = await story.summarize_branch(leaf_id)
+    except Exception as e:
+        return error_toast([f"Couldn't summarize: {e}"])
+    if summary_on is None:
+        return info_toast([f"Nothing new to summarize: the newest {config.SUMMARY_KEEP_RECENT} messages "
+                           "are always sent word for word."])
+    with session_scope() as s:
+        conv = get_conv(s, cid)
+        return render_messages(s, conv), info_toast(["Summarized. Older messages are now sent as the "
+                                                     "Story so far."])
+
+
+@app.get("/summary")
+def summary_view(mid: int):
+    with session_scope() as s:
+        return ui.summary_view(s.get(Message, mid))
+
+
+@app.get("/summary_form")
+def summary_form(mid: int):
+    with session_scope() as s:
+        return ui.summary_form(s.get(Message, mid))
+
+
+@app.post("/summary")
+def summary_save(mid: int, summary: str = ""):
+    with session_scope() as s:
+        m = s.get(Message, mid)
+        if summary.strip():  # an empty box is ignored; the Remove button is for removing
+            m.summary = summary.strip()
+        return ui.summary_view(m)
+
+
+@app.post("/summary_remove")
+def summary_remove(mid: int):
+    """Drop a summary: the messages it covered are sent in full again (or an older summary takes over)."""
+    with session_scope() as s:
+        m = s.get(Message, mid)
+        m.summary = ""
+        return render_messages(s, m.conversation)
 
 
 # ---------------------------------------------------------------- chat settings
@@ -410,26 +497,38 @@ def delete_conv(req, cid: int):
 
 
 @app.get("/scenarios")
-def scenarios():
+def scenarios(q: str = ""):
+    """The scenarios page. The search box asks for this same page with ?q=... and swaps in just the cards."""
+    q = q.strip()
     with session_scope() as s:
-        return ui.page("Scenarios", ui.scenarios_page(all_scenarios(s)), sidebar=sidebar(s, "scenarios"))
+        found = search_scenarios(s, q) if q else all_scenarios(s)
+        return ui.page("Scenarios", ui.scenarios_page(found, q), sidebar=sidebar(s, "scenarios"))
 
 
 @app.get("/scenarios/edit")
 def scenario_edit(sid: int | None = None):
     with session_scope() as s:
         sc = s.get(Scenario, sid) if sid else None
-        return ui.page("Scenario", ui.scenario_editor(sc), sidebar=sidebar(s, "scenarios"))
+        return ui.page("Scenario", ui.scenario_editor(sc, known_categories(s)), sidebar=sidebar(s, "scenarios"))
 
 
 @app.post("/scenarios/save")
-def scenario_save(name: str, system_prompt: str = "", description: str = "", sid: str = ""):
+async def scenario_save(name: str, system_prompt: str = "", description: str = "", categories: str = "",
+                        sid: str = ""):
+    name, description, system_prompt = name.strip(), description.strip(), system_prompt.strip()
+    with session_scope() as s:
+        known = known_categories(s)
+    chosen = category.clean(categories, known)
+    if not chosen and (description or system_prompt):
+        # Left empty: let the AI pick (if it fails, the scenario is just saved without categories).
+        chosen = await category.suggest(name, description, system_prompt, known)
     with session_scope() as s:
         sc = s.get(Scenario, int(sid)) if sid.isdigit() else None
         if sc is None:
             sc = Scenario()
             s.add(sc)
-        sc.name, sc.description, sc.system_prompt = name.strip(), description.strip(), system_prompt.strip()
+        sc.name, sc.description, sc.system_prompt = name, description, system_prompt
+        sc.categories = chosen
         sc.updated_at = utcnow()
     return Redirect("/scenarios")
 
@@ -442,7 +541,7 @@ def scenario_clone(sid: int):
         if original is None:
             return Redirect("/scenarios")
         copy = Scenario(name=f"{original.name} (copy)"[:200], description=original.description,
-                        system_prompt=original.system_prompt)
+                        categories=original.categories, system_prompt=original.system_prompt)
         s.add(copy)
         s.flush()
         copy_id = copy.id
@@ -524,4 +623,7 @@ def media(aid: int):
     return FileResponse(path, media_type=mime, filename=name, content_disposition_type=disposition)
 
 
-serve()
+# 127.0.0.1: only this computer can open the app. The default (0.0.0.0) would let anyone on the same
+# network (e.g. café Wi-Fi) use it, and your API key, since zchat has no login. It also makes uvicorn
+# print a link that works; http://0.0.0.0:5001 doesn't open in a browser on Windows.
+serve(host="127.0.0.1")

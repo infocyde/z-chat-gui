@@ -2,7 +2,8 @@
 
 Kept separate from the web layer so it can be tested without HTTP. Each event is
 (name, payload): "delta"/"reasoning" carry text, "status" a progress line, "title" means the
-conversation got a title, and the stream always ends with "done" or "error".
+conversation got a title, "summary" means older messages were just summarized into a "Story so far"
+note (payload: the message it was saved on), and the stream always ends with "done" or "error".
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from pathlib import PurePosixPath
 from typing import AsyncIterator
 from urllib.parse import urlparse
 
-from . import config, documents, zai
+from . import config, documents, story, zai
 from .chat import build_messages, effective_model, path_to, touch
 from .db import session_scope
 from .models import Attachment, Conversation, Message
@@ -47,20 +48,36 @@ async def run(mid: int) -> AsyncIterator[Event]:
             return
         m.status = "streaming"
         kind = m.kind
-        conv = m.conversation
-        path = path_to(s, m.parent_id)
-        model = effective_model(conv, path)
-        if kind != "image":
-            m.model = model
-        msgs = build_messages(conv, path, model)
-        thinking, effort, temperature = conv.thinking, conv.reasoning_effort, conv.temperature
+        parent_id = m.parent_id
+        path = path_to(s, parent_id)
+        summarize_first = kind != "image" and story.summary_due(path, effective_model(m.conversation, path))
 
     if kind == "image":
         async for ev in _run_image(mid):
             yield ev
-    else:
-        async for ev in _run_text(mid, msgs, model, thinking, effort, temperature):
-            yield ev
+        return
+
+    if summarize_first:
+        yield "status", {"t": "Summarizing the story so far…"}
+        try:
+            summary_on = await story.summarize_branch(parent_id)
+        except Exception as e:  # carry on with the full story; it may still fit
+            summary_on = None
+            yield "status", {"t": f"Couldn't summarize ({e}). Sending the full story."}
+        if summary_on:
+            yield "summary", {"mid": summary_on}
+
+    with session_scope() as s:
+        m = s.get(Message, mid)
+        conv = m.conversation
+        path = path_to(s, parent_id)
+        model = effective_model(conv, path)
+        m.model = model
+        msgs = build_messages(conv, path, model)
+        thinking, effort, temperature = conv.thinking, conv.reasoning_effort, conv.temperature
+
+    async for ev in _run_text(mid, msgs, model, thinking, effort, temperature):
+        yield ev
 
 
 async def _run_text(mid: int, msgs: list[dict], model: str, thinking: bool, effort: str,
