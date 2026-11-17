@@ -1,1 +1,105 @@
-# z-chat-gui
+# zchat
+
+A personal web chat client for [Z.ai](https://docs.z.ai) (GLM models), built with FastHTML.
+
+- **Chats** stream replies with optional "thinking" shown in a collapsible box.
+- **Branching:** editing one of your messages or regenerating a reply creates a new branch (`‹ 2/3 ›`); nothing is overwritten. **Fork** copies a chat up to any message into a new chat. Assistant replies can be edited in place to steer a story.
+- **Models:** pick per chat and switch at any time; each reply records which model wrote it.
+- **Scenarios:** reusable system prompts, managed on the Scenarios tab and picked on the new-chat page. You can also type a one-off system prompt.
+- **Images:** the *Image* toggle sends your text to `glm-image`; *Illustrate* writes an image prompt from the current scene. Images are downloaded to `image_output/` and shown in the chat (Z.ai's links expire after 30 days).
+- **Documents:** attach PDF, DOCX, text/markdown, or images. Text is extracted locally; scanned PDFs fall back to `glm-ocr`. Images go to a vision model (switches to the free GLM-4.6V Flash automatically if needed).
+- **Tokens:** per-reply input / cached / output counts, per-chat totals with estimated cost, a context-window bar, and an all-time total in the sidebar.
+
+## Run it
+
+```powershell
+uv sync
+uv run main.py          # http://localhost:5001
+```
+
+Settings are read from `..\.env` (the folder *above* this project), by design:
+
+```ini
+ZCHAT_ZAI_API_KEY=...                                     # zchat's own key (falls back to ZAI_API_KEY)
+ZCHAT_ZAI_BASE_URL=https://api.z.ai/api/coding/paas/v4    # GLM Coding Plan key
+# or https://api.z.ai/api/paas/v4 for a standard pay-as-you-go key (the default)
+```
+
+Z.ai keeps two kinds of keys apart: **Coding Plan** keys (monthly subscription, created under
+GLM Coding Plan → Personal) only work on the `/coding/` URL; **standard** keys (API Keys page, billed
+from the cash balance) only work on the normal URL. With a Coding Plan key the model list shows only
+models the plan includes, and costs show "Coding Plan" instead of dollars. Image generation and OCR
+are not part of the Coding Plan; they need pay-as-you-go credit and a standard key.
+
+On the Coding Plan the sidebar shows the plan's 5-hour and weekly credit limits (with reset times) and
+the last 7 days of tokens, from `api.z.ai/api/monitor/usage` (the same data as z.ai's usage page).
+It asks Z.ai on every page load or reload, then by default after every 5 replies; set
+`plan_usage` in `config.yaml` to change the count or to refresh every N seconds instead.
+
+Z.ai has no pricing API, so prices (input, cached input, output per 1M tokens) are read from
+`docs.z.ai/guides/overview/pricing.md` once a day and saved to `data/prices.json`. If that page can't be
+read, the prices typed into `zchat/config.py` are used. The selected model's price shows next to the
+model picker; hover it to see where it came from.
+
+Set `ZCHAT_ENV_FILE` to read a different file.
+
+App behavior (not secrets) lives in `config.yaml` in the project folder; restart the server after
+editing it. Set `ZCHAT_SETTINGS_FILE` to use a different file.
+
+## Database & migrations
+
+SQLite lives at `data/zchat.db` (git-ignored). Schema is managed by Alembic; the app runs
+`alembic upgrade head` automatically on startup.
+
+After changing `zchat/models.py`:
+
+```powershell
+uv run alembic revision --autogenerate -m "describe the change"
+uv run alembic upgrade head      # or just restart the app
+```
+
+## Tests
+
+```powershell
+uv run pytest
+```
+
+Tests use a temporary database (built through the real migrations) and fake the Z.ai API, so they cost nothing.
+
+## Code map
+
+| File | What it does |
+|---|---|
+| `main.py` | Routes (pages, sending, streaming, editing, scenarios, files) |
+| `config.yaml` | App settings you can edit (e.g. how often the plan meters refresh) |
+| `zchat/config.py` | Paths, API settings, `config.yaml` loading, model list with prices/context sizes |
+| `zchat/models.py` | SQLAlchemy tables: scenarios, conversations, messages (a tree), attachments |
+| `zchat/chat.py` | Conversation tree logic, building the API `messages`, token/cost totals |
+| `zchat/generate.py` | Runs a pending reply (text or image) and yields progress events |
+| `zchat/zai.py` | Z.ai HTTP client: streaming chat, image generation, OCR, Coding Plan quota |
+| `zchat/scenario_json.py` | Scenario import/export: the JSON format and cleanup of imported text |
+| `zchat/pricing.py` | Per-token prices, read daily from the docs pricing page (cached in `data/prices.json`) |
+| `zchat/documents.py` | Upload handling and text extraction |
+| `zchat/ui.py` | HTML components |
+| `static/` | `app.css`, `app.js` (streaming + composer), favicon |
+
+## Notes
+
+- Default model: GLM-5.3 Flash on the Coding Plan (it always reasons; the Thinking switch sets low vs
+  high effort), GLM-4.7 Flash (free) with a standard key.
+- Z.ai caches repeated prompt prefixes automatically. Changing the system prompt mid-chat resets that cache.
+- Prices in `config.py` are only a fallback for when the docs page can't be read; models with no known price show `$…+?`.
+
+## Scenario import/export
+
+On the Scenarios page: **Export** downloads the checked scenarios (all of them if none are checked), the
+download icon on a card exports just that one, and **Import** takes one or more `.json` files. The format
+is plain: one scenario is `{"name": "...", "description": "...", "system_prompt": "..."}` and several
+are a list of those. Imports never overwrite: a name that already exists becomes "Name (2)". Files in
+UTF-8, UTF-16 or old Windows encodings all work; invisible control characters are removed.
+
+## Planned: campaign memory (RAG)
+
+Not built yet. The intended shape: embed finished messages into a local **Chroma** collection keyed by
+message id with `scenario_id` / `conversation_id` metadata, then retrieve relevant past events into the
+prompt for long-running campaigns. Z.ai has no embeddings endpoint, so embeddings will be local.

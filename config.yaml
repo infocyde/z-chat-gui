@@ -1,0 +1,12 @@
+# zchat settings. Secrets (API key, base URL) stay in ../.env; this file is for how the app behaves.
+# Restart the server after editing.
+
+# Coding Plan meters in the sidebar (5-hour and weekly limits). Only shown with a Coding Plan key.
+plan_usage:
+  # Loading or reloading a page always asks Z.ai for fresh numbers. After that, when to ask again
+  # (in between, the last numbers are shown):
+  #   replies - after every `every_replies` chat replies
+  #   seconds - every `every_seconds` seconds while a zchat page is open
+  refresh_by: replies
+  every_replies: 5
+  every_seconds: 60

@@ -1,0 +1,527 @@
+"""zchat: a FastHTML chat client for Z.ai.
+
+Run with:  uv run main.py   then open http://localhost:5001
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from datetime import datetime, timedelta
+
+import httpx
+from fasthtml.common import (Div, FileResponse, Link, Meta, P, Redirect, Response, Script, Span,
+                             StreamingResponse, fast_app, serve, to_xml)
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from zchat import chat, config, documents, generate, pricing, scenario_json, ui, zai
+from zchat.db import session_scope, upgrade_db
+from zchat.models import Attachment, Conversation, Message, Scenario, utcnow
+
+upgrade_db()  # apply any pending Alembic migrations (creates data/zchat.db on first run)
+
+# Changes whenever app.css or app.js is edited, so browsers fetch the new file instead of a cached one.
+ASSET_VERSION = max(int(f.stat().st_mtime) for f in (config.ROOT / "static").glob("app.*"))
+
+# Light/dark: the choice saved by the sidebar toggle (see toggleTheme in app.js), otherwise the OS setting.
+THEME_SCRIPT = """
+let theme = null;
+try { theme = localStorage.getItem("theme"); } catch (e) {}
+if (theme !== "light" && theme !== "dark") {
+  theme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+document.documentElement.dataset.theme = theme;
+"""
+
+background_tasks = []  # keep a reference so the task isn't garbage-collected
+
+
+async def start_price_refresh():
+    """Re-read Z.ai's pricing page in the background (at most once a day)."""
+    background_tasks.append(asyncio.create_task(pricing.refresh_forever()))
+
+
+app, rt = fast_app(
+    pico=False,
+    static_path="static",
+    on_startup=[start_price_refresh],
+    hdrs=(
+        Meta(name="viewport", content="width=device-width, initial-scale=1"),
+        Link(rel="icon", href="/favicon.svg", type="image/svg+xml"),
+        Link(rel="preconnect", href="https://fonts.googleapis.com"),
+        Link(rel="stylesheet",
+             href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono&display=swap"),
+        Link(rel="stylesheet", href=f"/app.css?v={ASSET_VERSION}"),
+        Script(THEME_SCRIPT),  # inline and not deferred, so the page never flashes the wrong theme
+        Script(src=f"/app.js?v={ASSET_VERSION}", defer=True),
+    ),
+)
+
+
+# ---------------------------------------------------------------- helpers
+
+
+def recent_conversations(s: Session) -> list[Conversation]:
+    return list(s.scalars(select(Conversation).order_by(Conversation.updated_at.desc()).limit(100)))
+
+
+def all_scenarios(s: Session) -> list[Scenario]:
+    return list(s.scalars(select(Scenario).order_by(Scenario.name)))
+
+
+def sidebar(s: Session, active: str = "chats", conv_id: int | None = None):
+    return ui.sidebar(recent_conversations(s), active, conv_id, chat.usage_for(s))
+
+
+def branch_info(s: Session, m: Message) -> ui.Branch:
+    sibs = chat.siblings(s, m)
+    ids = [x.id for x in sibs]
+    i = ids.index(m.id)
+    return ui.Branch(index=i + 1, count=len(ids),
+                     prev_id=ids[i - 1] if i > 0 else None,
+                     next_id=ids[i + 1] if i + 1 < len(ids) else None)
+
+
+def render_message(s: Session, m: Message):
+    return ui.message_view(m, branch_info(s, m))
+
+
+def render_messages(s: Session, conv: Conversation) -> list:
+    return [render_message(s, m) for m in chat.active_path(s, conv)]
+
+
+def render_stats(s: Session, conv: Conversation, oob: bool = False):
+    used, model = chat.context_used(chat.active_path(s, conv))
+    return ui.stats_view(conv, chat.usage_for(s, conv.id), used, model, oob=oob)
+
+
+def get_conv(s: Session, cid: int) -> Conversation:
+    conv = s.get(Conversation, cid)
+    if conv is None:
+        raise LookupError(f"Chat {cid} not found")
+    return conv
+
+
+async def read_uploads(req) -> tuple[list[documents.Processed], list[str]]:
+    """Process every file in the multipart form. Returns (processed files, error messages)."""
+    form = await req.form()
+    processed, errors = [], []
+    for f in form.getlist("files"):
+        if not getattr(f, "filename", None):  # browsers send an empty part when no file is chosen
+            continue
+        try:
+            processed.append(await documents.process_upload(f.filename, await f.read()))
+        except documents.UnsupportedFile as e:
+            errors.append(str(e))
+        except Exception as e:
+            errors.append(f"{f.filename}: could not read file ({e})")
+    return processed, errors
+
+
+def error_toast(errors: list[str]):
+    """An error popup. It's an out-of-band swap, so it lands in #toasts whatever the request's target was."""
+    if not errors:
+        return None
+    return Div(Div(*[P(e) for e in errors], cls="toast error-box", onclick="this.remove()"),
+               hx_swap_oob="beforeend:#toasts")
+
+
+def info_toast(messages: list[str]):
+    """Like error_toast, but neutral, and it fades out by itself."""
+    return Div(Div(*[P(m) for m in messages], cls="toast toast-info", onclick="this.remove()"),
+               hx_swap_oob="beforeend:#toasts")
+
+
+def sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+# ---------------------------------------------------------------- pages
+
+
+@app.get("/")
+def index(scenario: int | None = None):
+    with session_scope() as s:
+        chosen = s.get(Scenario, scenario) if scenario else None
+        return ui.page("New chat", ui.new_chat_page(all_scenarios(s), chosen), sidebar=sidebar(s))
+
+
+@app.get("/c/{cid}")
+def conversation_page(cid: int):
+    with session_scope() as s:
+        conv = s.get(Conversation, cid)
+        if conv is None:
+            return Redirect("/")
+        header = ui.chat_header(conv, render_stats(s, conv))
+        return ui.page(conv.title, ui.chat_page(conv, header, render_messages(s, conv)),
+                       sidebar=sidebar(s, conv_id=cid))
+
+
+@app.get("/scenario_prompt")
+def scenario_prompt(scenario_id: str = ""):
+    """Fill the system-prompt box when a scenario is picked on the new-chat page."""
+    with session_scope() as s:
+        sc = s.get(Scenario, int(scenario_id)) if scenario_id.isdigit() else None
+        return ui.system_prompt_area(sc.system_prompt if sc else "")
+
+
+# ---------------------------------------------------------------- sending messages
+
+
+@app.post("/new")
+async def new_chat(req):
+    form = await req.form()
+    content = (form.get("content") or "").strip()
+    image_mode = form.get("mode") == "image"
+    files, errors = await read_uploads(req)
+    if not content and not files:
+        return error_toast(["Type a message or attach a file to start."])
+    scenario_id = form.get("scenario_id") or ""
+    model = form.get("model") or config.DEFAULT_MODEL
+    with session_scope() as s:
+        conv = Conversation(model=model if config.is_available(model) else config.DEFAULT_MODEL,
+                            system_prompt=(form.get("system_prompt") or "").strip(),
+                            scenario_id=int(scenario_id) if scenario_id.isdigit() else None,
+                            thinking=bool(form.get("thinking")),
+                            reasoning_effort=form.get("reasoning_effort") or config.DEFAULT_EFFORT)
+        s.add(conv)
+        s.flush()
+        user, _reply = chat.send_user_message(s, conv, content, image_mode=image_mode)
+        for p in files:
+            chat.add_attachment(s, user, p)
+        cid = conv.id
+    # Errors (e.g. an unsupported file) can't be shown after a redirect, so the chat just starts without it.
+    return Redirect(f"/c/{cid}")
+
+
+@app.post("/send")
+async def send(req, cid: int):
+    form = await req.form()
+    content = (form.get("content") or "").strip()
+    image_mode = form.get("mode") == "image"
+    files, errors = await read_uploads(req)
+    if not content and not files:
+        return error_toast(errors or ["Nothing to send."])
+    with session_scope() as s:
+        conv = get_conv(s, cid)
+        user, reply = chat.send_user_message(s, conv, content, image_mode=image_mode)
+        for p in files:
+            chat.add_attachment(s, user, p)
+        s.flush()
+        s.refresh(user)
+        return render_message(s, user), render_message(s, reply), error_toast(errors)
+
+
+@app.post("/illustrate")
+def illustrate(cid: int):
+    with session_scope() as s:
+        conv = get_conv(s, cid)
+        user, reply = chat.send_user_message(s, conv, "", kind="illustrate", image_mode=True)
+        return render_message(s, user), render_message(s, reply)
+
+
+@app.get("/stream")
+async def stream(mid: int):
+    """Server-sent events for one pending reply. app.js listens and updates the bubble."""
+
+    async def events():
+        async for name, data in generate.run(mid):
+            if name in ("delta", "reasoning", "status"):
+                yield sse(name, data)
+            elif name == "title":
+                with session_scope() as s:
+                    conv = s.get(Message, mid).conversation
+                    yield sse("sidebar", {"html": to_xml(ui.conv_list(recent_conversations(s), conv.id)),
+                                          "title": conv.title})
+            else:  # "done" or "error": send the final rendered bubble and updated token stats
+                with session_scope() as s:
+                    m = s.get(Message, mid)
+                    yield sse("finished", {"html": to_xml(render_message(s, m)),
+                                           "stats": to_xml(render_stats(s, m.conversation)),
+                                           "total": to_xml(ui.total_usage(chat.usage_for(s)))})
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.post("/stop")
+def stop(mid: int):
+    generate.STOP.add(mid)
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------- editing, branching, forking
+
+
+@app.get("/msg")
+def message_fragment(mid: int):
+    with session_scope() as s:
+        return render_message(s, s.get(Message, mid))
+
+
+@app.get("/edit_form")
+def edit_form(mid: int):
+    with session_scope() as s:
+        return ui.edit_form(s.get(Message, mid))
+
+
+@app.post("/edit")
+def edit(mid: int, content: str = ""):
+    with session_scope() as s:
+        m = s.get(Message, mid)
+        if m.role == "assistant":
+            m.content = content  # in-place: lets you steer a story by rewriting the narrator
+            return render_message(s, m)
+        chat.edit_user_message(s, m, content.strip())
+        return render_messages(s, m.conversation)
+
+
+@app.post("/regen")
+def regen(mid: int):
+    with session_scope() as s:
+        m = s.get(Message, mid)
+        chat.regenerate(s, m)
+        return render_messages(s, m.conversation)
+
+
+@app.get("/switch")
+def switch(mid: int):
+    with session_scope() as s:
+        m = s.get(Message, mid)
+        chat.switch_to(s, m)
+        return render_messages(s, m.conversation), render_stats(s, m.conversation, oob=True)
+
+
+@app.post("/fork")
+def fork(mid: int):
+    with session_scope() as s:
+        m = s.get(Message, mid)
+        new = chat.fork(s, m.conversation, m)
+        new_id = new.id
+    return Redirect(f"/c/{new_id}")
+
+
+# ---------------------------------------------------------------- chat settings
+
+
+@app.post("/settings")
+def settings(cid: int, model: str = "", thinking: str = "", reasoning_effort: str = ""):
+    with session_scope() as s:
+        conv = get_conv(s, cid)
+        # The form only contains the control that was on screen, which matches the *previous* model:
+        # an effort dropdown for GLM-5.3-style models, a thinking switch for the rest.
+        if config.uses_effort(config.usable_model(conv.model)):
+            if reasoning_effort in config.EFFORT_LEVELS:
+                conv.reasoning_effort = reasoning_effort
+        else:
+            conv.thinking = bool(thinking)  # an unchecked checkbox isn't sent at all
+        if config.is_available(model):
+            conv.model = model
+        # Re-render the control (and price) in case the model changed.
+        shown = config.usable_model(conv.model)
+        return (render_stats(s, conv, oob=True),
+                ui.reasoning_control(shown, conv.thinking, conv.reasoning_effort, oob=True),
+                ui.model_price(shown, oob=True))
+
+
+@app.get("/reasoning_control")
+def reasoning_control(model: str = ""):
+    """New-chat page: swap the thinking switch / effort dropdown (and the price) when the model changes."""
+    return ui.reasoning_control(model, False, config.DEFAULT_EFFORT), ui.model_price(model, oob=True)
+
+
+# The last Coding Plan numbers from Z.ai. Page loads always fetch new ones; after that, config.yaml
+# decides when to ask again.
+plan_cache = {"plan": None, "fetched_at": None, "replies": 0}
+
+
+def finished_replies(s: Session) -> int:
+    return s.scalar(select(func.count(Message.id)).where(Message.role == "assistant", Message.status == "done"))
+
+
+def plan_refresh_due(replies_now: int) -> bool:
+    if plan_cache["plan"] is None:
+        return True
+    if config.PLAN_REFRESH_BY == "seconds":
+        return datetime.now() - plan_cache["fetched_at"] >= timedelta(seconds=config.PLAN_EVERY_SECONDS)
+    return replies_now - plan_cache["replies"] >= config.PLAN_EVERY_REPLIES
+
+
+@app.get("/plan_usage")
+async def plan_usage(fresh: bool = False):
+    """Sidebar meters for the Coding Plan's 5-hour and weekly limits.
+
+    fresh=True (a page load or reload) always asks Z.ai; otherwise config.yaml decides.
+    """
+    if not config.USING_CODING_PLAN:
+        return ""
+    with session_scope() as s:
+        replies_now = finished_replies(s)
+    if fresh or plan_refresh_due(replies_now):
+        try:
+            plan_cache.update(plan=await zai.plan_usage(), fetched_at=datetime.now(), replies=replies_now)
+        except (zai.ZaiError, httpx.HTTPError, KeyError, ValueError) as e:
+            if plan_cache["plan"] is None:
+                return ui.plan_usage(None, error=str(e))
+            # otherwise keep showing the last good numbers
+    return ui.plan_usage(plan_cache["plan"], updated=plan_cache["fetched_at"])
+
+
+@app.post("/system")
+def set_system(cid: int, system_prompt: str = ""):
+    with session_scope() as s:
+        get_conv(s, cid).system_prompt = system_prompt.strip()
+    return Span("Saved. Applies to the next reply.")
+
+
+@app.post("/save_scenario")
+def save_scenario_from_chat(cid: int, system_prompt: str = "", name: str = ""):
+    with session_scope() as s:
+        conv = get_conv(s, cid)
+        sc = Scenario(name=name.strip() or conv.title, system_prompt=system_prompt.strip())
+        s.add(sc)
+        s.flush()
+        conv.scenario_id = sc.id
+        conv.system_prompt = sc.system_prompt
+        return Span(f'Saved as scenario "{sc.name}".')
+
+
+@app.post("/rename")
+def rename(cid: int, title: str = ""):
+    with session_scope() as s:
+        get_conv(s, cid).title = title.strip()[:200] or "Untitled"
+        return ui.conv_list(recent_conversations(s), cid, oob=True)
+
+
+@app.post("/delete_conv")
+def delete_conv(req, cid: int):
+    with session_scope() as s:
+        conv = s.get(Conversation, cid)
+        if conv:
+            s.delete(conv)
+    # If you deleted the chat you're looking at, go home; otherwise just remove it from the list.
+    if req.headers.get("HX-Current-URL", "").rstrip("/").endswith(f"/c/{cid}"):
+        return Redirect("/")
+    return ""
+
+
+# ---------------------------------------------------------------- scenarios
+
+
+@app.get("/scenarios")
+def scenarios():
+    with session_scope() as s:
+        return ui.page("Scenarios", ui.scenarios_page(all_scenarios(s)), sidebar=sidebar(s, "scenarios"))
+
+
+@app.get("/scenarios/edit")
+def scenario_edit(sid: int | None = None):
+    with session_scope() as s:
+        sc = s.get(Scenario, sid) if sid else None
+        return ui.page("Scenario", ui.scenario_editor(sc), sidebar=sidebar(s, "scenarios"))
+
+
+@app.post("/scenarios/save")
+def scenario_save(name: str, system_prompt: str = "", description: str = "", sid: str = ""):
+    with session_scope() as s:
+        sc = s.get(Scenario, int(sid)) if sid.isdigit() else None
+        if sc is None:
+            sc = Scenario()
+            s.add(sc)
+        sc.name, sc.description, sc.system_prompt = name.strip(), description.strip(), system_prompt.strip()
+        sc.updated_at = utcnow()
+    return Redirect("/scenarios")
+
+
+@app.post("/scenarios/clone")
+def scenario_clone(sid: int):
+    """Copy a scenario and open the copy in the editor, ready to tweak."""
+    with session_scope() as s:
+        original = s.get(Scenario, sid)
+        if original is None:
+            return Redirect("/scenarios")
+        copy = Scenario(name=f"{original.name} (copy)"[:200], description=original.description,
+                        system_prompt=original.system_prompt)
+        s.add(copy)
+        s.flush()
+        copy_id = copy.id
+    return Redirect(f"/scenarios/edit?sid={copy_id}")
+
+
+@app.post("/scenarios/delete")
+def scenario_delete(sid: int):
+    with session_scope() as s:
+        sc = s.get(Scenario, sid)
+        if sc:
+            s.delete(sc)
+    return Redirect("/scenarios")
+
+
+@app.get("/scenarios/export")
+def scenario_export(req):
+    """Download scenarios as JSON: ?sid=3 gives one object, ?sid=3&sid=5 a list, and no sid a list of all."""
+    ids = [int(x) for x in req.query_params.getlist("sid") if x.isdigit()]
+    with session_scope() as s:
+        if ids:
+            chosen = list(s.scalars(select(Scenario).where(Scenario.id.in_(ids)).order_by(Scenario.name)))
+        else:
+            chosen = all_scenarios(s)
+        if not chosen:
+            return Response("No scenarios to export", status_code=404)
+        if len(ids) == 1:
+            data, filename = scenario_json.to_dict(chosen[0]), scenario_json.filename_for(chosen[0].name)
+        else:
+            data, filename = [scenario_json.to_dict(sc) for sc in chosen], "zchat-scenarios.json"
+    return Response(scenario_json.dumps(data), media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@app.post("/scenarios/import")
+async def scenario_import(req):
+    """Import one or more .json files (each holding one scenario or a list). Re-renders the scenarios page."""
+    form = await req.form()
+    imported, errors = [], []
+    with session_scope() as s:
+        taken = {sc.name for sc in all_scenarios(s)}
+        for f in form.getlist("files"):
+            if not getattr(f, "filename", None):
+                continue
+            try:
+                items = scenario_json.parse(await f.read())
+            except ValueError as e:
+                errors.append(f"{f.filename}: {e}")
+                continue
+            for item in items:
+                item["name"] = scenario_json.unique_name(item["name"], taken)
+                taken.add(item["name"])
+                s.add(Scenario(**item))
+                imported.append(item["name"])
+        s.flush()
+        page = ui.scenarios_page(all_scenarios(s))
+
+    notice = None
+    if imported:
+        count = f"{len(imported)} scenario" + ("s" if len(imported) != 1 else "")
+        notice = info_toast([f"Imported {count}: " + ", ".join(imported)])
+    return page, notice, error_toast(errors)
+
+
+# ---------------------------------------------------------------- files
+
+
+@app.get("/media/{aid}")
+def media(aid: int):
+    with session_scope() as s:
+        a = s.get(Attachment, aid)
+        if a is None:
+            return Response("Not found", status_code=404)
+        path = documents.abs_path(a.path)
+        mime, name = a.mime, a.filename
+    if not path.exists():
+        return Response("File missing on disk", status_code=404)
+    disposition = "inline" if mime.startswith(("image/", "text/", "application/pdf")) else "attachment"
+    return FileResponse(path, media_type=mime, filename=name, content_disposition_type=disposition)
+
+
+serve()

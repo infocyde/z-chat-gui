@@ -1,0 +1,26 @@
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local data: the SQLite database and everything users create or upload
+data/
+*.db
+*.db-wal
+*.db-shm
+image_output/
+uploads/
+
+# Secrets (the API key lives in ../.env, outside the repo, but just in case)
+.env
+.sesskey
+
+# Browser-test scratch output
+.playwright-mcp/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
