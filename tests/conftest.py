@@ -25,3 +25,41 @@ def s():
 
     with session_scope() as session:
         yield session
+
+
+# Words the fake embedder treats as meaning the same thing.
+FAKE_SYNONYMS = {"bog": "swamp", "marsh": "swamp", "fen": "swamp"}
+
+
+def fake_vector(text: str) -> bytes:
+    """A stand-in for the embedding model: each word lights up one of 384 slots (synonyms share a slot)."""
+    import re
+    import zlib
+
+    import numpy as np
+
+    v = np.zeros(384, dtype=np.float32)
+    for word in re.findall(r"\w+", text.lower()):
+        v[zlib.crc32(FAKE_SYNONYMS.get(word, word).encode()) % 384] += 1
+    norm = np.linalg.norm(v)
+    return (v / norm if norm else v).astype(np.float32).tobytes()
+
+
+@pytest.fixture(autouse=True)
+def fake_embeddings(monkeypatch):
+    """No test ever downloads or loads the real embedding model."""
+    from zchat import embeddings
+
+    calls = {"passages": 0, "queries": 0}
+
+    def embed_passages(texts):
+        calls["passages"] += len(texts)
+        return [fake_vector(t) for t in texts]
+
+    def embed_query(text):
+        calls["queries"] += 1
+        return fake_vector(text)
+
+    monkeypatch.setattr(embeddings, "embed_passages", embed_passages)
+    monkeypatch.setattr(embeddings, "embed_query", embed_query)
+    return calls

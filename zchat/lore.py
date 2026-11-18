@@ -7,21 +7,23 @@ a version with no message applies to every branch; one tied to a message was mad
 update after that reply, so only branches through that reply see it, the same way "Story so far"
 summaries work.
 
-Before each reply, find_for_reply searches the branch's current entries with SQLite's full-text
-index (FTS5, ranked by BM25) and picks the best few. lore_block turns them into the note that
-chat.build_messages puts in front of the newest user message.
+Before each reply, find_for_reply searches the branch's current entries two ways: by words, with
+SQLite's full-text index (FTS5, ranked by BM25), and by meaning, comparing embeddings (see
+embeddings.py) with sqlite-vec. The two rankings are merged (fuse) and the best few are picked.
+lore_block turns them into the note that chat.build_messages puts in front of the newest user message.
 
 This module must not import zchat.chat (chat imports this one).
 """
 
 from __future__ import annotations
 
+import logging
 import re
 
 from sqlalchemy import bindparam, select, text
 from sqlalchemy.orm import Session
 
-from . import config
+from . import config, embeddings
 from .models import Conversation, LoreEntry, LoreVersion, Message, Scenario
 
 # Common words that would match almost every entry. BM25 already counts them for little,
@@ -34,6 +36,10 @@ STOPWORDS = {
 }
 MAX_QUERY_WORDS = 64
 MAX_RESULTS = 20
+MAX_QUERY_CHARS = 2000  # what's embedded for the meaning search: the end of the recent messages
+RRF_K = 60  # reciprocal rank fusion constant (the usual value)
+
+log = logging.getLogger(__name__)
 
 LORE_HEADING = ("Background from the lorebook, for the narrator. Not written by the user: use what fits "
                 "the scene and never mention these notes.")
@@ -93,6 +99,44 @@ def search_fts(s: Session, version_ids: list[int], words: list[str]) -> list[int
     return list(s.scalars(query, {"match": match, "ids": version_ids, "limit": MAX_RESULTS}))
 
 
+def ensure_embeddings(s: Session, versions: list[LoreVersion]) -> None:
+    """Embed the versions that don't have an embedding yet (new, or edited since), in one call."""
+    missing = [v for v in versions if v.embedding is None]
+    if not missing:
+        return
+    vectors = embeddings.embed_passages([embeddings.passage_text(v.name, v.keys, v.text) for v in missing])
+    for v, vector in zip(missing, vectors):
+        v.embedding = vector
+    s.flush()
+
+
+def search_vectors(s: Session, version_ids: list[int], query_text: str) -> list[int]:
+    """Version ids whose meaning is close to `query_text`, best first, at least LORE_MIN_SIMILARITY alike."""
+    if not version_ids or not query_text.strip():
+        return []
+    query = text("SELECT id FROM lore_versions "
+                 "WHERE id IN :ids AND embedding IS NOT NULL AND vec_distance_cosine(embedding, :q) <= :max_distance "
+                 "ORDER BY vec_distance_cosine(embedding, :q) LIMIT :limit"
+                 ).bindparams(bindparam("ids", expanding=True))
+    params = {"ids": version_ids, "q": embeddings.embed_query(query_text),
+              "max_distance": 1 - config.LORE_MIN_SIMILARITY,  # cosine distance = 1 - cosine similarity
+              "limit": MAX_RESULTS}
+    return list(s.scalars(query, params))
+
+
+def fuse(rankings: list[list[int]]) -> list[int]:
+    """Merge several best-first lists into one (reciprocal rank fusion).
+
+    Each id scores 1 / (60 + its rank) in every list it appears in, and the scores are added, so an
+    entry that ranks well in both the word search and the meaning search comes out on top.
+    """
+    scores: dict[int, float] = {}
+    for ranking in rankings:
+        for rank, item in enumerate(ranking, start=1):
+            scores[item] = scores.get(item, 0.0) + 1 / (RRF_K + rank)
+    return sorted(scores, key=lambda item: scores[item], reverse=True)  # sorted() is stable: ties keep order
+
+
 def recent_text(path: list[Message]) -> str:
     """The text of the newest messages, which is what the lorebook is searched with."""
     return "\n".join(m.content for m in path[-config.LORE_SCAN_MESSAGES:] if m.content)
@@ -105,7 +149,15 @@ def estimate_tokens(v: LoreVersion) -> int:
 def find_for_reply(s: Session, conv: Conversation, path: list[Message]) -> list[LoreVersion]:
     """The lorebook entries to send with the next reply: the best matches, within the caps."""
     candidates = {v.id: v for v in current_versions(s, conv.id, path) if v.enabled}
-    ranked = search_fts(s, list(candidates), query_words(recent_text(path)))
+    story_text = recent_text(path)
+    rankings = [search_fts(s, list(candidates), query_words(story_text))]
+    if config.LORE_VECTORS and candidates:
+        try:
+            ensure_embeddings(s, list(candidates.values()))
+            rankings.append(search_vectors(s, list(candidates), story_text[-MAX_QUERY_CHARS:]))
+        except Exception as e:  # e.g. the model couldn't be downloaded: words alone still work
+            log.warning("Lorebook meaning search failed, using word search only: %s", e)
+    ranked = fuse(rankings)
     chosen, tokens = [], 0
     for version_id in ranked:
         if len(chosen) >= config.LORE_MAX_ENTRIES:
@@ -136,7 +188,8 @@ def copy_to_fork(s: Session, old_conv_id: int, new_conv_id: int, message_ids: di
             if v.message_id is not None and v.message_id not in message_ids:
                 continue  # not on the forked branch
             copies.append(LoreVersion(message_id=message_ids.get(v.message_id), name=v.name, keys=v.keys,
-                                      text=v.text, enabled=v.enabled, created_at=v.created_at))
+                                      text=v.text, enabled=v.enabled, embedding=v.embedding,
+                                      created_at=v.created_at))
         if copies:
             s.add(LoreEntry(conversation_id=new_conv_id, versions=copies))
     s.flush()

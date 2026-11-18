@@ -3,7 +3,7 @@
 import pytest
 from sqlalchemy import func, select, text
 
-from zchat import chat, config, lore
+from zchat import chat, config, embeddings, lore
 from zchat.models import Conversation, LoreEntry, LoreVersion, Message, Scenario, ScenarioLore
 
 
@@ -36,9 +36,13 @@ def test_fts_index_follows_lore_versions(s):
 
     v.text = "Drowned in the marsh."
     s.flush()
-    found = s.execute(text("SELECT rowid FROM lore_fts WHERE lore_fts MATCH 'drowned'")).scalars().all()
-    assert found == [v.id]
-    assert s.execute(text("SELECT rowid FROM lore_fts WHERE lore_fts MATCH 'lantern'")).scalars().all() == []
+
+    def matches(word):  # only this test's row: other tests leave lore in the shared test database
+        return s.execute(text("SELECT rowid FROM lore_fts WHERE lore_fts MATCH :w AND rowid = :id"),
+                         {"w": word, "id": v.id}).scalars().all()
+
+    assert matches("drowned") == [v.id]
+    assert matches("lantern") == []
 
 
 def test_deleting_a_chat_leaves_no_lore_behind(s):
@@ -260,3 +264,67 @@ def test_previous_turns_stay_identical_for_the_cache(s):
                                         world_notes="<world_notes>B</world_notes>")
     # Everything before turn N's user message is sent exactly as before, so the cache still hits.
     assert turn_n_plus_1[:len(turn_n) - 1] == turn_n[:-1]
+
+
+# ---------------------------------------------------------------- search by meaning (step 2)
+
+
+def test_fuse():
+    assert lore.fuse([[1, 2, 3], [3, 1]]) == [1, 3, 2]
+    assert lore.fuse([[5, 6], []]) == [5, 6]
+    assert lore.fuse([]) == []
+
+
+def marsh_chat(s, story: str):
+    conv = new_conv(s)
+    add_entry(s, conv, "Mire Hag", "A swamp witch.")
+    add_entry(s, conv, "Gloomfang", "A cave wolf.")
+    chat.send_user_message(s, conv, story)
+    return conv, chat.active_path(s, conv)[:-1]
+
+
+def test_vectors_find_an_entry_with_no_shared_words(s, monkeypatch):
+    monkeypatch.setattr(config, "LORE_MIN_SIMILARITY", 0.1)
+    conv, path = marsh_chat(s, "Something rises from the bog.")  # no word in common with any entry
+    assert [v.name for v in lore.find_for_reply(s, conv, path)] == ["Mire Hag"]
+
+
+def test_vectors_off_means_words_only(s, monkeypatch, fake_embeddings):
+    monkeypatch.setattr(config, "LORE_MIN_SIMILARITY", 0.1)
+    monkeypatch.setattr(config, "LORE_VECTORS", False)
+    conv, path = marsh_chat(s, "Something rises from the bog.")
+    assert lore.find_for_reply(s, conv, path) == []
+    assert fake_embeddings == {"passages": 0, "queries": 0}
+
+
+def test_min_similarity_keeps_weak_matches_out(s, monkeypatch):
+    monkeypatch.setattr(config, "LORE_MIN_SIMILARITY", 0.9)
+    conv, path = marsh_chat(s, "Something rises from the bog.")
+    assert lore.find_for_reply(s, conv, path) == []
+
+
+def test_falls_back_to_words_when_embedding_fails(s, monkeypatch):
+    def boom(text):
+        raise RuntimeError("model not downloaded")
+
+    monkeypatch.setattr(embeddings, "embed_query", boom)
+    conv, path = marsh_chat(s, "Is that the Mire Hag?")
+    assert [v.name for v in lore.find_for_reply(s, conv, path)] == ["Mire Hag"]
+
+
+def test_embeddings_are_made_once_and_kept(s, fake_embeddings):
+    conv, path = marsh_chat(s, "Something rises from the bog.")
+    lore.find_for_reply(s, conv, path)
+    assert fake_embeddings["passages"] == 2
+    lore.find_for_reply(s, conv, path)
+    assert fake_embeddings["passages"] == 2  # already embedded
+    assert all(v.embedding for v in lore.current_versions(s, conv.id, path))
+
+
+def test_search_vectors_only_looks_at_the_given_versions(s, monkeypatch):
+    monkeypatch.setattr(config, "LORE_MIN_SIMILARITY", 0.1)
+    conv, path = marsh_chat(s, "x")
+    versions = lore.current_versions(s, conv.id, path)
+    lore.ensure_embeddings(s, versions)
+    gloomfang = [v for v in versions if v.name == "Gloomfang"][0]
+    assert lore.search_vectors(s, [gloomfang.id], "swamp") == []

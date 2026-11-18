@@ -750,6 +750,7 @@ def chat_lore_save(cid: int, name: str, text: str = "", keys: str = "", enabled:
         version.keys = scenario_json.clean(keys, 500, one_line=True)
         version.text = scenario_json.clean(text, 20_000)
         version.enabled = bool(enabled)  # an unchecked checkbox isn't sent at all
+        version.embedding = None  # embedded again (from the new text) before the next search
         s.flush()
         return render_chat_lore(s, conv)
 

@@ -561,3 +561,29 @@ def test_switching_branches_refreshes_the_lorebook_drawer(client):
     assert "No entries yet" in client.get(f"/c/{cid}").text
     r = client.get(f"/switch?mid={mid}")
     assert 'id="chat-lore"' in r.text and 'hx-swap-oob="true"' in r.text
+
+
+def test_editing_a_chat_entry_re_embeds_it(client):
+    from zchat import lore
+    from zchat.db import session_scope
+    from zchat.models import LoreVersion
+
+    r = client.post("/new", data={"content": "Hello.", "model": "glm-4.7-flash"}, headers={"HX-Request": "true"})
+    cid = int(re.search(r"/c/(\d+)", r.headers["HX-Redirect"]).group(1))
+    client.post("/lore/chat/save", data={"cid": cid, "name": "Mire Hag", "text": "Swamp witch.", "enabled": "1"})
+    with session_scope() as s:
+        v = s.scalar(select_version(cid))
+        lore.ensure_embeddings(s, [v])
+        vid = v.id
+        assert v.embedding is not None
+
+    client.post("/lore/chat/save", data={"cid": cid, "vid": vid, "name": "Mire Hag", "text": "Drowned.", "enabled": "1"})
+    with session_scope() as s:
+        assert s.get(LoreVersion, vid).embedding is None  # made again before the next search
+
+
+def select_version(cid):
+    from sqlalchemy import select
+
+    from zchat.models import LoreEntry, LoreVersion
+    return select(LoreVersion).join(LoreEntry).where(LoreEntry.conversation_id == cid)
