@@ -216,6 +216,8 @@ label.btn { flex-direction: row; font-size: 0.9rem; color: var(--text); }  /* a 
 .title-input:hover { border-color: var(--border); }
 .title-input:focus { border-color: var(--accent); background: var(--surface); }
 .chat-header .select { padding: 6px 28px 6px 10px; font-size: 0.85rem; }
+/* The title keeps at least this much room; if the model controls don't fit beside it, they wrap below. */
+.chat-header > .row:first-child { min-width: 220px; }
 
 .chat-stats { display: flex; align-items: center; gap: 10px; font-size: 0.75rem; color: var(--text-muted); width: 100%; }
 .ctx-bar { width: 120px; height: 6px; border-radius: 999px; background: var(--surface); overflow: hidden; border: 1px solid var(--border); }
