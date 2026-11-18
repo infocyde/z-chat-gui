@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -168,6 +168,9 @@ class LoreVersion(Base):
     keys: Mapped[str] = mapped_column(String(500), default="")  # comma-separated
     text: Mapped[str] = mapped_column(Text, default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # What the entry means, as 384 float32 numbers (see embeddings.py). None until it's been embedded;
+    # cleared when the name, keys or text change.
+    embedding: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     entry: Mapped[LoreEntry] = relationship(back_populates="versions")

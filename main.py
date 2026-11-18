@@ -15,7 +15,7 @@ from fasthtml.common import (Div, FileResponse, Link, Meta, P, Redirect, Respons
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from zchat import (category, chat, config, documents, generate, lore, lore_import, lore_ui, pricing,
+from zchat import (category, chat, config, documents, embeddings, generate, lore, lore_import, lore_ui, pricing,
                    scenario_json, story, ui, zai)
 from zchat.db import session_scope, upgrade_db
 from zchat.models import (Attachment, Conversation, LoreEntry, LoreVersion, Message, Scenario,
@@ -44,10 +44,24 @@ async def start_price_refresh():
     background_tasks.append(asyncio.create_task(pricing.refresh_forever()))
 
 
+async def warm_up_embeddings():
+    """Load the lorebook's embedding model in the background (downloading it on first run)."""
+    if not config.LORE_VECTORS:
+        return
+
+    async def load():
+        try:
+            await asyncio.to_thread(embeddings.warm_up)
+        except Exception as e:  # no network on first run, etc.: the lorebook falls back to word search
+            print(f"zchat: couldn't load the lorebook's embedding model ({e}); using word search only.")
+
+    background_tasks.append(asyncio.create_task(load()))
+
+
 app, rt = fast_app(
     pico=False,
     static_path="static",
-    on_startup=[start_price_refresh],
+    on_startup=[start_price_refresh, warm_up_embeddings],
     hdrs=(
         Meta(name="viewport", content="width=device-width, initial-scale=1"),
         Link(rel="icon", href="/favicon.svg", type="image/svg+xml"),

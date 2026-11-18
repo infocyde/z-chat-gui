@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Iterator
 
+import sqlite_vec
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, event
@@ -21,6 +22,10 @@ def _sqlite_pragmas(dbapi_conn, _record):
     cur.execute("PRAGMA foreign_keys=ON")
     cur.execute("PRAGMA journal_mode=WAL")
     cur.close()
+    # sqlite-vec adds vector functions such as vec_distance_cosine (used by the lorebook search).
+    dbapi_conn.enable_load_extension(True)
+    sqlite_vec.load(dbapi_conn)
+    dbapi_conn.enable_load_extension(False)
 
 
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
