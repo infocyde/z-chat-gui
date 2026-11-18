@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import config, documents, pricing
+from . import config, documents, lore, pricing
 from .models import Attachment, Conversation, Message, utcnow
 
 # ---------------------------------------------------------------- tree navigation
@@ -126,17 +126,20 @@ def fork(s: Session, conv: Conversation, upto: Message) -> Conversation:
     s.add(new)
     s.flush()
     parent: int | None = None
+    message_ids: dict[int, int] = {}  # original message id -> its copy's id
     for m in path_to(s, upto.id):
         if m.status in ("pending", "streaming"):
             break
         c = Message(conversation_id=new.id, parent_id=parent, role=m.role, kind=m.kind, content=m.content,
-                    reasoning=m.reasoning, summary=m.summary, model=m.model, status=m.status,
-                    error=m.error, created_at=m.created_at)
+                    reasoning=m.reasoning, summary=m.summary, lore_used=m.lore_used, lore_note=m.lore_note,
+                    model=m.model, status=m.status, error=m.error, created_at=m.created_at)
         s.add(c)
         s.flush()
         copy_attachments(s, m, c)
+        message_ids[m.id] = c.id
         parent = c.id
     new.active_leaf_id = parent
+    lore.copy_to_fork(s, conv.id, new.id, message_ids)
     return new
 
 
