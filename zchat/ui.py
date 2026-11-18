@@ -591,7 +591,8 @@ def category_picker(current: str, known: list[str]):
         cls="stack tight")
 
 
-def scenario_editor(s: Scenario | None, known_categories: list[str]):
+def scenario_editor(s: Scenario | None, known_categories: list[str], lore_section=None):
+    """`lore_section` comes from lore_ui.scenario_lore_section (built by the route, so ui.py needn't import it)."""
     return Div(
         Div(H1("Edit scenario" if s else "New scenario"), A("Back", href="/scenarios", cls="btn btn-ghost"),
             cls="row between page-head"),
@@ -615,4 +616,5 @@ def scenario_editor(s: Scenario | None, known_categories: list[str]):
                 cls="row between"),
             # Saving can take a few seconds when the AI picks categories; stop double-clicks meanwhile.
             hx_post="/scenarios/save", hx_disabled_elt="find button[type='submit']", cls="stack"),
+        lore_section,
         cls="page narrow")

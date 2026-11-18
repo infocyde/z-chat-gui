@@ -424,3 +424,17 @@ body.busy #send-btn { display: none; }
   .spend { margin-left: 0; }
   .chat-stats { flex-wrap: wrap; }
 }
+
+/* ---------------------------------------------------------------- lorebooks */
+.lore-section { margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--border); }
+.lore-section h2 { font-size: 1.1rem; margin: 0; }
+.lore-list { display: flex; flex-direction: column; gap: 8px; }
+.lore-row, .lore-form {
+  border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--bg-elev);
+}
+.lore-row .preview { margin: 4px 0 0; font-size: 0.85rem; color: var(--text-muted); white-space: pre-wrap; }
+.lore-row .tags { margin-top: 4px; min-height: 0; }
+.tag.tag-static, .tag.tag-static:hover { background: var(--surface-hover); color: var(--text-muted); cursor: default; }
+.tag.tag-off { background: transparent; color: var(--text-muted); border: 1px dashed var(--border); }
+.lore-form label.check { display: flex; flex-direction: row; align-items: center; gap: 6px; font-size: 0.85rem; }
+.lore-used { color: var(--text-muted); }

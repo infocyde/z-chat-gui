@@ -408,3 +408,98 @@ def test_reply_sends_and_shows_the_lore_it_used(client, monkeypatch):
     assert "### Mire Hag\nSwamp witch." in last and "Gloomfang" not in last
     assert last.endswith("I look for the hag.")
     assert "Lore: Mire Hag" in client.get(f"/c/{cid}").text
+
+
+# ---------------------------------------------------------------- lorebooks
+
+ST_WORLD = {"entries": {"0": {"key": ["hag"], "comment": "Mire Hag", "content": "Swamp witch.", "constant": True}}}
+
+
+def lore_names(sid):
+    from sqlalchemy import select
+
+    from zchat.db import session_scope
+    from zchat.models import ScenarioLore
+
+    with session_scope() as s:
+        return list(s.scalars(select(ScenarioLore.name).where(ScenarioLore.scenario_id == sid)
+                              .order_by(ScenarioLore.id)))
+
+
+def test_scenario_lorebook_add_edit_delete(client):
+    client.post("/scenarios/save", data={"name": "Lore Editor", "system_prompt": "A marsh.", "categories": "Fantasy"})
+    sid = scenario_named("Lore Editor").id
+
+    # A new scenario's editor explains that the lorebook comes after saving.
+    assert "Save the scenario first to add a lorebook." in client.get("/scenarios/edit").text
+    page = client.get(f"/scenarios/edit?sid={sid}").text
+    assert "Lorebook" in page and f'hx-get="/lore/scenario/form?sid={sid}"' in page
+
+    assert 'name="name"' in client.get(f"/lore/scenario/form?sid={sid}").text
+    r = client.post("/lore/scenario/save", data={"sid": sid, "name": "Mire Hag", "keys": "hag, witch",
+                                                 "text": "Swamp witch.", "enabled": "1"})
+    assert "Mire Hag" in r.text and "witch" in r.text and 'id="scenario-lore"' in r.text
+    assert "Mire Hag" in client.get(f"/scenarios/edit?sid={sid}").text
+
+    from zchat.db import session_scope
+    from zchat.models import Scenario
+    with session_scope() as s:
+        lid = s.get(Scenario, sid).lore[0].id
+
+    # Edit: the form is filled in; an unchecked "enabled" box means off.
+    assert "Swamp witch." in client.get(f"/lore/scenario/form?sid={sid}&lid={lid}").text
+    r = client.post("/lore/scenario/save", data={"sid": sid, "lid": lid, "name": "Mire Hag", "keys": "hag",
+                                                 "text": "Drowned."})
+    assert "Drowned." in r.text and "Disabled" in r.text
+    assert lore_names(sid) == ["Mire Hag"]
+
+    r = client.post(f"/lore/scenario/delete?lid={lid}")
+    assert "Mire Hag" not in r.text and lore_names(sid) == []
+
+
+def test_scenario_lorebook_import_and_export(client):
+    import json
+
+    client.post("/scenarios/save", data={"name": "Lore Files", "system_prompt": "A marsh.", "categories": "Fantasy"})
+    sid = scenario_named("Lore Files").id
+    client.post("/lore/scenario/save", data={"sid": sid, "name": "Mire Hag", "keys": "", "text": "Hand-written.",
+                                             "enabled": "1"})
+
+    files = [("files", ("world.json", json.dumps(ST_WORLD).encode(), "application/json")),
+             ("files", ("bad.json", b"{", "application/json"))]
+    r = client.post(f"/lore/scenario/import?sid={sid}", files=files, headers={"HX-Request": "true"})
+    assert "Imported 1 entry" in r.text and "Other lorebook settings" in r.text
+    assert "bad.json: not valid JSON" in r.text
+    assert lore_names(sid) == ["Mire Hag", "Mire Hag"]  # imports never overwrite
+
+    r = client.get(f"/lore/scenario/export?sid={sid}")
+    assert 'filename="lore-files-lorebook.json"' in r.headers["content-disposition"]
+    assert [e["content"] for e in json.loads(r.text)["entries"]] == ["Hand-written.", "Swamp witch."]
+
+
+def test_new_chat_and_clone_copy_the_scenario_lorebook(client):
+    from zchat import chat, lore
+    from zchat.db import session_scope
+    from zchat.models import Conversation
+
+    client.post("/scenarios/save", data={"name": "Lore Copies", "system_prompt": "A marsh.", "categories": "Fantasy"})
+    sid = scenario_named("Lore Copies").id
+    client.post("/lore/scenario/save", data={"sid": sid, "name": "Mire Hag", "keys": "hag", "text": "Swamp witch.",
+                                             "enabled": "1"})
+
+    r = client.post("/new", data={"content": "Hello.", "model": "glm-4.7-flash", "scenario_id": sid,
+                                  "system_prompt": "A marsh."}, headers={"HX-Request": "true"})
+    cid = int(re.search(r"/c/(\d+)", r.headers["HX-Redirect"]).group(1))
+
+    client.post(f"/scenarios/clone?sid={sid}", headers={"HX-Request": "true"})
+    clone = scenario_named("Lore Copies (copy)")
+    assert lore_names(clone.id) == ["Mire Hag"]
+
+    # Editing the scenario afterwards doesn't change the chat that already started.
+    from zchat.models import Scenario
+    with session_scope() as s:
+        lid = s.get(Scenario, sid).lore[0].id
+    client.post(f"/lore/scenario/delete?lid={lid}")
+    with session_scope() as s:
+        conv = s.get(Conversation, cid)
+        assert [v.name for v in lore.current_versions(s, cid, chat.active_path(s, conv))] == ["Mire Hag"]

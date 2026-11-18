@@ -15,7 +15,8 @@ from fasthtml.common import (Div, FileResponse, Link, Meta, P, Redirect, Respons
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from zchat import category, chat, config, documents, generate, lore, pricing, scenario_json, story, ui, zai
+from zchat import (category, chat, config, documents, generate, lore, lore_import, lore_ui, pricing,
+                   scenario_json, story, ui, zai)
 from zchat.db import session_scope, upgrade_db
 from zchat.models import Attachment, Conversation, Message, Scenario, ScenarioLore, utcnow
 
@@ -512,7 +513,8 @@ def scenarios(q: str = ""):
 def scenario_edit(sid: int | None = None):
     with session_scope() as s:
         sc = s.get(Scenario, sid) if sid else None
-        return ui.page("Scenario", ui.scenario_editor(sc, known_categories(s)), sidebar=sidebar(s, "scenarios"))
+        editor = ui.scenario_editor(sc, known_categories(s), lore_ui.scenario_lore_section(sc))
+        return ui.page("Scenario", editor, sidebar=sidebar(s, "scenarios"))
 
 
 @app.post("/scenarios/save")
@@ -545,6 +547,7 @@ def scenario_clone(sid: int):
             return Redirect("/scenarios")
         copy = Scenario(name=f"{original.name} (copy)"[:200], description=original.description,
                         categories=original.categories, system_prompt=original.system_prompt)
+        copy.lore = [ScenarioLore(name=e.name, keys=e.keys, text=e.text, enabled=e.enabled) for e in original.lore]
         s.add(copy)
         s.flush()
         copy_id = copy.id
@@ -610,6 +613,94 @@ async def scenario_import(req):
         count = f"{len(imported)} scenario" + ("s" if len(imported) != 1 else "")
         notice = info_toast([f"Imported {count}: " + ", ".join(imported)])
     return page, notice, error_toast(errors)
+
+
+# ---------------------------------------------------------------- scenario lorebooks (see zchat/lore.py)
+
+
+def get_scenario(s: Session, sid: int) -> Scenario:
+    sc = s.get(Scenario, sid)
+    if sc is None:
+        raise LookupError(f"Scenario {sid} not found")
+    return sc
+
+
+def entry_count(n: int) -> str:
+    return f"{n} entry" if n == 1 else f"{n} entries"
+
+
+@app.get("/lore/scenario/list")
+def scenario_lore_list(sid: int):
+    with session_scope() as s:
+        return lore_ui.scenario_lore_list(get_scenario(s, sid))
+
+
+@app.get("/lore/scenario/form")
+def scenario_lore_form(sid: int, lid: int | None = None):
+    with session_scope() as s:
+        entry = s.get(ScenarioLore, lid) if lid else None
+        return lore_ui.scenario_lore_form(get_scenario(s, sid), entry)
+
+
+@app.post("/lore/scenario/save")
+def scenario_lore_save(sid: int, name: str, text: str = "", keys: str = "", enabled: str = "", lid: str = ""):
+    with session_scope() as s:
+        sc = get_scenario(s, sid)
+        entry = s.get(ScenarioLore, int(lid)) if lid.isdigit() else None
+        if entry is None or entry.scenario_id != sc.id:
+            entry = ScenarioLore()
+            sc.lore.append(entry)
+        entry.name = scenario_json.clean(name, 200, one_line=True) or "Untitled"
+        entry.keys = scenario_json.clean(keys, 500, one_line=True)
+        entry.text = scenario_json.clean(text, 20_000)
+        entry.enabled = bool(enabled)  # an unchecked checkbox isn't sent at all
+        s.flush()
+        return lore_ui.scenario_lore_list(sc)
+
+
+@app.post("/lore/scenario/delete")
+def scenario_lore_delete(lid: int):
+    with session_scope() as s:
+        entry = s.get(ScenarioLore, lid)
+        if entry is None:  # already gone (e.g. deleted in another tab)
+            return Response("Not found", status_code=404)
+        sc = entry.scenario
+        s.delete(entry)
+        s.flush()
+        s.refresh(sc)
+        return lore_ui.scenario_lore_list(sc)
+
+
+@app.post("/lore/scenario/import")
+async def scenario_lore_import(req, sid: int):
+    """Add the entries from one or more lorebook files. Existing entries are never overwritten."""
+    form = await req.form()
+    added, errors = 0, []
+    with session_scope() as s:
+        sc = get_scenario(s, sid)
+        for f in form.getlist("files"):
+            if not getattr(f, "filename", None):
+                continue
+            try:
+                entries = lore_import.parse(await f.read())
+            except ValueError as e:
+                errors.append(f"{f.filename}: {e}")
+                continue
+            sc.lore.extend(ScenarioLore(**entry) for entry in entries)
+            added += len(entries)
+        s.flush()
+        notice = info_toast([f"Imported {entry_count(added)}.", lore_import.IMPORT_NOTE]) if added else None
+        return lore_ui.scenario_lore_list(sc), notice, error_toast(errors)
+
+
+@app.get("/lore/scenario/export")
+def scenario_lore_export(sid: int):
+    with session_scope() as s:
+        sc = get_scenario(s, sid)
+        data = lore_import.to_export(sc.name, sc.lore)
+        filename = scenario_json.filename_for(sc.name).removesuffix(".json") + "-lorebook.json"
+    return Response(scenario_json.dumps(data), media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 # ---------------------------------------------------------------- files
