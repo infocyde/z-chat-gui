@@ -438,3 +438,5 @@ body.busy #send-btn { display: none; }
 .tag.tag-off { background: transparent; color: var(--text-muted); border: 1px dashed var(--border); }
 .lore-form label.check { display: flex; flex-direction: row; align-items: center; gap: 6px; font-size: 0.85rem; }
 .lore-used { color: var(--text-muted); }
+.lore-drawer .lore-list { max-height: 50vh; overflow-y: auto; padding-bottom: 14px; }
+.lore-drawer .lore-row, .lore-drawer .lore-form { background: var(--bg); }

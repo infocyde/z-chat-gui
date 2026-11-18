@@ -466,10 +466,12 @@ def system_drawer(conv: Conversation):
         cls="system-drawer")
 
 
-def chat_page(conv: Conversation, header, messages: list):
+def chat_page(conv: Conversation, header, messages: list, lore_drawer=None):
+    """`lore_drawer` comes from lore_ui.chat_lore_drawer (built by the route, so ui.py needn't import it)."""
     return Div(
         header,
         system_drawer(conv),
+        lore_drawer,
         Div(Div(*messages, id="messages", cls="messages"), id="scroller", cls="scroller"),
         Form(composer_bar(illustrate_cid=conv.id), hx_post=f"/send?cid={conv.id}", hx_target="#messages",
              hx_swap="beforeend", id="composer", cls="composer"),

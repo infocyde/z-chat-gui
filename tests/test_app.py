@@ -503,3 +503,61 @@ def test_new_chat_and_clone_copy_the_scenario_lorebook(client):
     with session_scope() as s:
         conv = s.get(Conversation, cid)
         assert [v.name for v in lore.current_versions(s, cid, chat.active_path(s, conv))] == ["Mire Hag"]
+
+
+def chat_lore(cid):
+    """(name, text, message_id) of each current version on the chat's active branch."""
+    from zchat import chat, lore
+    from zchat.db import session_scope
+    from zchat.models import Conversation
+
+    with session_scope() as s:
+        conv = s.get(Conversation, cid)
+        return [(v.name, v.text, v.message_id) for v in lore.current_versions(s, cid, chat.active_path(s, conv))]
+
+
+def test_chat_lorebook_drawer(client):
+    client.post("/scenarios/save", data={"name": "Lore Drawer", "system_prompt": "A marsh.", "categories": "Fantasy"})
+    sid = scenario_named("Lore Drawer").id
+    client.post("/lore/scenario/save", data={"sid": sid, "name": "Mire Hag", "keys": "hag", "text": "Swamp witch.",
+                                             "enabled": "1"})
+    r = client.post("/new", data={"content": "Hello.", "model": "glm-4.7-flash", "scenario_id": sid,
+                                  "system_prompt": "A marsh."}, headers={"HX-Request": "true"})
+    cid = int(re.search(r"/c/(\d+)", r.headers["HX-Redirect"]).group(1))
+    page = client.get(f"/c/{cid}").text
+    assert 'id="chat-lore"' in page and "Mire Hag" in page and "1 entry" in page
+
+    from zchat.db import session_scope
+    from zchat.models import LoreVersion
+    from sqlalchemy import select
+    with session_scope() as s:
+        vid = s.scalar(select(LoreVersion.id).join(LoreVersion.entry).where(LoreVersion.name == "Mire Hag")
+                       .order_by(LoreVersion.id.desc()))
+
+    # Edit in place: same version, still for every branch.
+    assert "Swamp witch." in client.get(f"/lore/chat/form?cid={cid}&vid={vid}").text
+    r = client.post("/lore/chat/save", data={"cid": cid, "vid": vid, "name": "Mire Hag", "keys": "hag",
+                                             "text": "Drowned.", "enabled": "1"})
+    assert "Drowned." in r.text
+    assert chat_lore(cid) == [("Mire Hag", "Drowned.", None)]
+
+    # Add one by hand: every branch sees it. The count updates too.
+    r = client.post("/lore/chat/save", data={"cid": cid, "name": "Gloomfang", "keys": "wolf", "text": "Cave wolf.",
+                                             "enabled": "1"})
+    assert "Gloomfang" in r.text and "2 entries" in r.text
+    assert chat_lore(cid) == [("Gloomfang", "Cave wolf.", None), ("Mire Hag", "Drowned.", None)]
+
+    # Delete removes the whole entry, on every branch.
+    r = client.post(f"/lore/chat/delete?vid={vid}")
+    assert "Mire Hag" not in r.text and "1 entry" in r.text
+    assert chat_lore(cid) == [("Gloomfang", "Cave wolf.", None)]
+
+
+def test_switching_branches_refreshes_the_lorebook_drawer(client):
+    r = client.post("/new", data={"content": "Hello.", "model": "glm-4.7-flash"}, headers={"HX-Request": "true"})
+    cid = int(re.search(r"/c/(\d+)", r.headers["HX-Redirect"]).group(1))
+    mid = re.search(r'data-stream-url="/stream\?mid=(\d+)"', client.get(f"/c/{cid}").text).group(1)
+    client.get(f"/stream?mid={mid}")
+    assert "No entries yet" in client.get(f"/c/{cid}").text
+    r = client.get(f"/switch?mid={mid}")
+    assert 'id="chat-lore"' in r.text and 'hx-swap-oob="true"' in r.text

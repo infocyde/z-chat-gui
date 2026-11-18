@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 from zchat import (category, chat, config, documents, generate, lore, lore_import, lore_ui, pricing,
                    scenario_json, story, ui, zai)
 from zchat.db import session_scope, upgrade_db
-from zchat.models import Attachment, Conversation, Message, Scenario, ScenarioLore, utcnow
+from zchat.models import (Attachment, Conversation, LoreEntry, LoreVersion, Message, Scenario,
+                          ScenarioLore, utcnow)
 
 upgrade_db()  # apply any pending Alembic migrations (creates data/zchat.db on first run)
 
@@ -124,6 +125,11 @@ def render_messages(s: Session, conv: Conversation) -> list:
     return out
 
 
+def render_chat_lore(s: Session, conv: Conversation, oob: bool = False):
+    """The chat's lorebook list, as the active branch sees it."""
+    return lore_ui.chat_lore_list(conv.id, lore.current_versions(s, conv.id, chat.active_path(s, conv)), oob=oob)
+
+
 def render_stats(s: Session, conv: Conversation, oob: bool = False):
     used, model = chat.context_used(chat.active_path(s, conv))
     return ui.stats_view(conv, chat.usage_for(s, conv.id), used, model, oob=oob)
@@ -187,7 +193,8 @@ def conversation_page(cid: int):
         if conv is None:
             return Redirect("/")
         header = ui.chat_header(conv, render_stats(s, conv))
-        return ui.page(conv.title, ui.chat_page(conv, header, render_messages(s, conv)),
+        drawer = lore_ui.chat_lore_drawer(cid, lore.current_versions(s, cid, chat.active_path(s, conv)))
+        return ui.page(conv.title, ui.chat_page(conv, header, render_messages(s, conv), drawer),
                        sidebar=sidebar(s, conv_id=cid))
 
 
@@ -330,7 +337,8 @@ def switch(mid: int):
     with session_scope() as s:
         m = s.get(Message, mid)
         chat.switch_to(s, m)
-        return render_messages(s, m.conversation), render_stats(s, m.conversation, oob=True)
+        return (render_messages(s, m.conversation), render_stats(s, m.conversation, oob=True),
+                render_chat_lore(s, m.conversation, oob=True))  # the other branch may know different things
 
 
 @app.post("/fork")
@@ -625,10 +633,6 @@ def get_scenario(s: Session, sid: int) -> Scenario:
     return sc
 
 
-def entry_count(n: int) -> str:
-    return f"{n} entry" if n == 1 else f"{n} entries"
-
-
 @app.get("/lore/scenario/list")
 def scenario_lore_list(sid: int):
     with session_scope() as s:
@@ -689,7 +693,7 @@ async def scenario_lore_import(req, sid: int):
             sc.lore.extend(ScenarioLore(**entry) for entry in entries)
             added += len(entries)
         s.flush()
-        notice = info_toast([f"Imported {entry_count(added)}.", lore_import.IMPORT_NOTE]) if added else None
+        notice = info_toast([f"Imported {lore_ui.entry_count(added)}.", lore_import.IMPORT_NOTE]) if added else None
         return lore_ui.scenario_lore_list(sc), notice, error_toast(errors)
 
 
@@ -701,6 +705,52 @@ def scenario_lore_export(sid: int):
         filename = scenario_json.filename_for(sc.name).removesuffix(".json") + "-lorebook.json"
     return Response(scenario_json.dumps(data), media_type="application/json",
                     headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+# ---------------------------------------------------------------- chat lorebooks
+
+
+@app.get("/lore/chat/list")
+def chat_lore_list(cid: int):
+    with session_scope() as s:
+        return render_chat_lore(s, get_conv(s, cid))
+
+
+@app.get("/lore/chat/form")
+def chat_lore_form(cid: int, vid: int | None = None):
+    with session_scope() as s:
+        version = s.get(LoreVersion, vid) if vid else None
+        return lore_ui.chat_lore_form(cid, version)
+
+
+@app.post("/lore/chat/save")
+def chat_lore_save(cid: int, name: str, text: str = "", keys: str = "", enabled: str = "", vid: str = ""):
+    """Edit the version shown (in place, like editing "Story so far"), or add a new entry for every branch."""
+    with session_scope() as s:
+        conv = get_conv(s, cid)
+        version = s.get(LoreVersion, int(vid)) if vid.isdigit() else None
+        if version is None or version.entry.conversation_id != conv.id:
+            version = LoreVersion()
+            s.add(LoreEntry(conversation_id=conv.id, versions=[version]))
+        version.name = scenario_json.clean(name, 200, one_line=True) or "Untitled"
+        version.keys = scenario_json.clean(keys, 500, one_line=True)
+        version.text = scenario_json.clean(text, 20_000)
+        version.enabled = bool(enabled)  # an unchecked checkbox isn't sent at all
+        s.flush()
+        return render_chat_lore(s, conv)
+
+
+@app.post("/lore/chat/delete")
+def chat_lore_delete(vid: int):
+    """Delete the whole entry (every version, on every branch)."""
+    with session_scope() as s:
+        version = s.get(LoreVersion, vid)
+        if version is None:  # already gone (e.g. deleted in another tab)
+            return Response("Not found", status_code=404)
+        conv = version.entry.conversation
+        s.delete(version.entry)
+        s.flush()
+        return render_chat_lore(s, conv)
 
 
 # ---------------------------------------------------------------- files
