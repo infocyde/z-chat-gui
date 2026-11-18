@@ -37,6 +37,26 @@ class Scenario(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
     conversations: Mapped[list[Conversation]] = relationship(back_populates="scenario")
+    # The starting lorebook: copied into each chat started from this scenario (see lore.seed_chat).
+    lore: Mapped[list[ScenarioLore]] = relationship(
+        back_populates="scenario", cascade="all, delete-orphan", passive_deletes=True,
+        order_by="ScenarioLore.id")
+
+
+class ScenarioLore(Base):
+    """One entry of a scenario's starting lorebook."""
+
+    __tablename__ = "scenario_lore"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scenario_id: Mapped[int] = mapped_column(ForeignKey("scenarios.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    keys: Mapped[str] = mapped_column(String(500), default="")  # comma-separated, e.g. "hag, witch"
+    text: Mapped[str] = mapped_column(Text, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    scenario: Mapped[Scenario] = relationship(back_populates="lore")
 
 
 class Conversation(Base):
@@ -61,6 +81,8 @@ class Conversation(Base):
     scenario: Mapped[Scenario | None] = relationship(back_populates="conversations")
     messages: Mapped[list[Message]] = relationship(
         back_populates="conversation", cascade="all, delete-orphan", passive_deletes=True)
+    lore_entries: Mapped[list[LoreEntry]] = relationship(
+        back_populates="conversation", cascade="all, delete-orphan", passive_deletes=True)
 
 
 class Message(Base):
@@ -79,6 +101,10 @@ class Message(Base):
     # "Story so far": a summary of the branch from the start up to and including this message.
     # Replies after it are sent this summary instead of those older messages (see story.py).
     summary: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # Names of the lorebook entries sent with this reply, one per line (shown as "Lore: ...").
+    lore_used: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # Set when the lorebook was updated right after this reply, e.g. "Added: Lantern\nUpdated: Gloomfang".
+    lore_note: Mapped[str] = mapped_column(Text, default="", server_default="")
     model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # done | pending | streaming | stopped | error
     status: Mapped[str] = mapped_column(String(16), default="done")
@@ -110,3 +136,38 @@ class Attachment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     message: Mapped[Message] = relationship(back_populates="attachments")
+
+
+class LoreEntry(Base):
+    """One thing in a chat's lorebook (a character, a place, a monster...).
+
+    Its name and text live in versions: the lorebook updates itself as the story goes, and each
+    branch of the chat sees the newest version made on that branch (see lore.current_versions).
+    """
+
+    __tablename__ = "lore_entries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"), index=True)
+
+    conversation: Mapped[Conversation] = relationship(back_populates="lore_entries")
+    versions: Mapped[list[LoreVersion]] = relationship(
+        back_populates="entry", cascade="all, delete-orphan", passive_deletes=True, order_by="LoreVersion.id")
+
+
+class LoreVersion(Base):
+    __tablename__ = "lore_versions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entry_id: Mapped[int] = mapped_column(ForeignKey("lore_entries.id", ondelete="CASCADE"), index=True)
+    # None: applies to every branch (copied from the scenario, or added/edited by hand).
+    # Set: made by the lorebook update after that reply, so only branches through it see it.
+    message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    keys: Mapped[str] = mapped_column(String(500), default="")  # comma-separated
+    text: Mapped[str] = mapped_column(Text, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    entry: Mapped[LoreEntry] = relationship(back_populates="versions")

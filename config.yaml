@@ -19,3 +19,19 @@ story_summary:
   at_tokens: 100000
   # The newest messages are always sent word for word, never summarized.
   keep_recent: 10
+
+# Lorebooks. A scenario's lorebook is copied into each chat started from it. Before every reply, the
+# chat's lorebook is searched and only the best-matching entries are sent, with your newest message.
+lorebook:
+  # How many of the newest messages are searched for things the lorebook knows about.
+  scan_messages: 4
+  # At most this many entries go with one reply, and roughly this many tokens of them.
+  max_entries: 4
+  max_tokens: 800
+  # Also search by meaning ("something rises from the bog" finds the swamp witch), with a small
+  # local model that is downloaded once (~70 MB). false = word matching only.
+  vectors: true
+  # How close in meaning an entry must be to count (0 to 1). Higher = stricter.
+  min_similarity: 0.6
+  # Every this many replies, the model updates the chat's lorebook with what happened. 0 = never.
+  update_every_replies: 10

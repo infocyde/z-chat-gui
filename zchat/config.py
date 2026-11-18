@@ -47,6 +47,14 @@ _summary = _settings.get("story_summary") or {}
 SUMMARY_AT_TOKENS = max(0, int(_summary.get("at_tokens", 100_000)))  # 0 = never automatically
 SUMMARY_KEEP_RECENT = max(2, int(_summary.get("keep_recent", 10)))
 
+_lore = _settings.get("lorebook") or {}
+LORE_SCAN_MESSAGES = max(1, int(_lore.get("scan_messages", 4)))  # recent messages searched for lore
+LORE_MAX_ENTRIES = max(0, int(_lore.get("max_entries", 4)))  # entries sent with one reply, at most
+LORE_MAX_TOKENS = max(0, int(_lore.get("max_tokens", 800)))  # and roughly this many tokens of them
+LORE_VECTORS = bool(_lore.get("vectors", True))  # also search by meaning (local embedding model)
+LORE_MIN_SIMILARITY = float(_lore.get("min_similarity", 0.6))  # 0..1, for the meaning search
+LORE_UPDATE_EVERY = max(0, int(_lore.get("update_every_replies", 10)))  # 0 = never update by itself
+
 DATA_DIR = Path(os.environ.get("ZCHAT_DATA_DIR", ROOT / "data"))
 DB_PATH = DATA_DIR / "zchat.db"
 DATABASE_URL = os.environ.get("ZCHAT_DATABASE_URL", f"sqlite:///{DB_PATH.as_posix()}")
