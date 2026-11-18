@@ -12,8 +12,9 @@ from .ui import icon
 PREVIEW_CHARS = 160
 
 
-def lore_row(e, *, edit_url: str, delete_url: str, target: str):
-    """One entry: name, keys, the start of its text, and Edit / Delete. `e` has id, name, keys, text, enabled."""
+def lore_row(e, *, edit_url: str, delete_url: str, target: str, delete_note: str = ""):
+    """One entry: name, keys, the start of its text, and Edit / Delete. `e` has id, name, keys, text, enabled.
+    `delete_note` is added to the delete confirm."""
     preview = e.text[:PREVIEW_CHARS] + ("…" if len(e.text) > PREVIEW_CHARS else "")
     return Div(
         Div(Div(Strong(e.name), Span("Disabled", cls="tag tag-off") if not e.enabled else None,
@@ -22,7 +23,7 @@ def lore_row(e, *, edit_url: str, delete_url: str, target: str):
                        hx_get=f"{edit_url}{e.id}", hx_target=f"#lore-row-{e.id}", hx_swap="outerHTML"),
                 Button(icon("trash", 15), cls="icon-btn danger-hover", title="Delete", type="button",
                        hx_post=f"{delete_url}{e.id}", hx_target=target, hx_swap="outerHTML",
-                       hx_confirm=f'Delete "{e.name}" from the lorebook?'),
+                       hx_confirm=f'Delete "{e.name}" from the lorebook?{delete_note}'),
                 cls="row"),
             cls="row between"),
         Div(*[Span(k, cls="tag tag-static") for k in split_keys(e.keys)], cls="tags") if e.keys else None,
@@ -31,13 +32,14 @@ def lore_row(e, *, edit_url: str, delete_url: str, target: str):
 
 
 def lore_list(entries: list, *, list_id: str, edit_url: str, delete_url: str, empty_text: str,
-              header=None, oob: bool = False):
+              header=None, oob: bool = False, delete_note: str = ""):
     """The whole list. Adding, editing, deleting and importing all swap this element out for a fresh one.
 
     The first child is an empty slot where the "Add entry" form appears.
     """
     target = f"#{list_id}"
-    rows = [lore_row(e, edit_url=edit_url, delete_url=delete_url, target=target) for e in entries]
+    rows = [lore_row(e, edit_url=edit_url, delete_url=delete_url, target=target, delete_note=delete_note)
+            for e in entries]
     return Div(header, Div(id=f"{list_id}-new"),
                *(rows or [P(empty_text, cls="muted small")]),
                id=list_id, cls="lore-list", hx_swap_oob="true" if oob else None)
@@ -127,6 +129,7 @@ def chat_lore_list(conv_id: int, versions: list, oob: bool = False):
                  cls="row between")
     return lore_list(versions, list_id="chat-lore", edit_url=f"/lore/chat/form?cid={conv_id}&vid=",
                      delete_url="/lore/chat/delete?vid=", header=header, oob=oob,
+                     delete_note=" It goes on every branch.",
                      empty_text="No entries yet. Add characters, places, monsters or items the narrator "
                                 "should remember.")
 
@@ -164,6 +167,7 @@ def lore_note_view(m, versions: list):
         Div(*[Div(Strong(v.name), P(v.text, cls="preview")) for v in versions], cls="stack tight"),
         Div(Button("Undo", type="button", cls="btn btn-ghost", hx_post=f"/lore/undo?mid={m.id}",
                    hx_target="#messages",
-                   hx_confirm="Undo this lorebook update? The entries it added or changed go back to how they were."),
+                   hx_confirm="Undo this lorebook update? The entries it added or changed go back to how "
+                              "they were, including any edits you made to them since."),
             cls="row end"),
         id=f"lore-note-{m.id}", cls="lore-note")

@@ -75,14 +75,18 @@ def test_update_every_zero_means_never(s, monkeypatch):
     ('{"changes": [{"name": "Gloomfang", "keys": ["wolf"], "text": "Wounded."}]}', ["Gloomfang"]),
     ('```json\n{"changes": [{"name": "A", "text": "x"}]}\n```', ["A"]),
     ('Here you go: {"changes": [{"name": "A", "keys": "a, b", "text": "x"}]} Hope that helps!', ["A"]),
-    ("Sure! Here are the changes: none really.", []),
+    ('{"changes": [{"name": "A", "keys": 5, "text": "x"}]}', ["A"]),  # odd keys are dropped, not a crash
+    ('{"changes": []}', []),
     ('{"changes": [{"name": "", "text": "x"}, {"name": "B"}, "junk", {"name": "C", "text": 5}]}', []),
-    ('{"changes": "nope"}', []),
-    ('{"changes": [', []),
-    ("[]", []),
+    # Unreadable answers are None, not "no changes", so the update is tried again.
+    ("Sure! Here are the changes: none really.", None),
+    ('{"changes": "nope"}', None),
+    ('{"changes": [', None),  # cut off
+    ("[]", None),
 ])
 def test_parse_changes(answer, names):
-    assert [c["name"] for c in lore_update.parse_changes(answer)] == names
+    changes = lore_update.parse_changes(answer)
+    assert (None if changes is None else [c["name"] for c in changes]) == names
 
 
 def test_parse_changes_cleans_and_caps():
@@ -171,16 +175,38 @@ async def test_failed_update_changes_nothing(monkeypatch):
         assert s.get(Message, leaf).lore_note == ""  # so it's tried again after the next reply
 
 
-async def test_unreadable_answer_counts_as_no_changes(monkeypatch):
-    monkeypatch.setattr(zai, "complete", FakeComplete("I think the story is going great!"))
+async def test_unreadable_answer_is_tried_again(monkeypatch):
+    monkeypatch.setattr(zai, "complete", FakeComplete('I think the story is going great! {"changes": ['))
     with session_scope() as s:
         conv = make_story(s, 1)
         leaf = conv.active_leaf_id
 
-    await lore_update.update_lore(leaf)
+    with pytest.raises(zai.ZaiError, match="Couldn't read the model's answer"):
+        await lore_update.update_lore(leaf)
 
     with session_scope() as s:
-        assert s.get(Message, leaf).lore_note == "No changes."
+        assert s.get(Message, leaf).lore_note == ""  # that stretch of story is read again next time
+
+
+async def test_unreadable_draft_is_an_error(monkeypatch):
+    monkeypatch.setattr(zai, "complete", FakeComplete("Here are some ideas for your world!"))
+    with pytest.raises(zai.ZaiError, match="Couldn't read the model's answer"):
+        await lore_update.draft_from_prompt("A marsh.", "glm-4.7-flash")
+
+
+async def test_a_long_gap_sends_only_the_newest_messages(monkeypatch):
+    # An old chat with no updates yet (or many failed ones) doesn't send the whole story.
+    monkeypatch.setattr(config, "LORE_UPDATE_EVERY", 2)
+    fake = FakeComplete('{"changes": []}')
+    monkeypatch.setattr(zai, "complete", fake)
+    with session_scope() as s:
+        leaf = make_story(s, 30).active_leaf_id
+
+    await lore_update.update_lore(leaf)
+
+    request = fake.requests[0][-1]["content"]
+    assert "user 27" in request and "narrator 30" in request  # 4 x 2 = the last 8 messages
+    assert "user 26" not in request and "narrator 26" not in request
 
 
 async def test_draft_from_prompt(monkeypatch):

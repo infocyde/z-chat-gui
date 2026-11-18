@@ -61,6 +61,9 @@ def test_fields_are_cleaned():
     (json.dumps({"entries": []}).encode(), "no entries"),
     (json.dumps([{"content": ""}]).encode(), "no entries"),
     (json.dumps("just text").encode(), "not a lorebook file"),
+    (json.dumps({"spec": "chara_card_v2", "data": "x"}).encode(), "has no lorebook"),
+    (json.dumps({"spec": "chara_card_v2", "data": {"character_book": {"entries": 5}}}).encode(),
+     "not a lorebook file"),
     (b"{", "not valid JSON"),
     (b" " * (scenario_json.MAX_FILE_BYTES + 1), "too big"),
 ])
@@ -72,3 +75,8 @@ def test_clear_errors(raw, message):
 def test_the_import_note_says_what_is_ignored():
     assert lore_import.IMPORT_NOTE == ("Only name, keys, text and on/off are used for now. Other lorebook settings "
                                        "(secondary keys, always-on, position, probability, …) were ignored.")
+
+
+def test_odd_keys_are_dropped():
+    raw = json.dumps({"entries": {"0": {"content": "a", "key": 5}, "1": {"content": "b", "keys": ["x", 7, None]}}})
+    assert [e["keys"] for e in lore_import.parse(raw.encode())] == ["", "x, 7"]

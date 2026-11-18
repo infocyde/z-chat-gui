@@ -547,7 +547,8 @@ def test_chat_lorebook_drawer(client):
     assert "Gloomfang" in r.text and "2 entries" in r.text
     assert chat_lore(cid) == [("Gloomfang", "Cave wolf.", None), ("Mire Hag", "Drowned.", None)]
 
-    # Delete removes the whole entry, on every branch.
+    # Delete removes the whole entry, on every branch, and the confirm says so.
+    assert 'from the lorebook? It goes on every branch.' in client.get(f"/c/{cid}").text
     r = client.post(f"/lore/chat/delete?vid={vid}")
     assert "Mire Hag" not in r.text and "1 entry" in r.text
     assert chat_lore(cid) == [("Gloomfang", "Cave wolf.", None)]
@@ -621,6 +622,7 @@ def test_stream_runs_a_due_update_before_the_reply_and_undo_reverts_it(client, m
 
     page = client.get(f"/c/{cid}").text
     assert f'id="lore-note-{first}"' in page and "Barkeep" in page
+    assert "including any edits you made to them since" in page  # Undo's confirm
 
     r = client.post(f"/lore/undo?mid={first}", headers={"HX-Request": "true"})
     assert "undone" in r.text and 'id="chat-lore"' in r.text
@@ -678,3 +680,18 @@ def test_draft_needs_a_system_prompt_and_reports_failures(client, monkeypatch):
                                          "categories": "Fantasy"})
     r = client.post(f"/lore/scenario/draft?sid={sid}", headers={"HX-Request": "true"})
     assert "Couldn't draft a lorebook: rate limited" in r.text and lore_names(sid) == []
+
+
+def test_edit_and_regenerate_refresh_the_lorebook_drawer(client):
+    # Both move to a new branch, which can have different lore.
+    cid, first = start_chat_with_one_reply(client)
+    from zchat.db import session_scope
+    from zchat.models import Message
+    with session_scope() as s:
+        user_id = s.get(Message, int(first)).parent_id
+
+    r = client.post(f"/edit?mid={user_id}", data={"content": "I run in."}, headers={"HX-Request": "true"})
+    assert 'id="chat-lore"' in r.text and 'hx-swap-oob="true"' in r.text
+
+    r = client.post(f"/regen?mid={first}", headers={"HX-Request": "true"})
+    assert 'id="chat-lore"' in r.text and 'hx-swap-oob="true"' in r.text

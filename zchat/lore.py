@@ -151,7 +151,7 @@ def find_for_reply(s: Session, conv: Conversation, path: list[Message]) -> list[
     candidates = {v.id: v for v in current_versions(s, conv.id, path) if v.enabled}
     story_text = recent_text(path)
     rankings = [search_fts(s, list(candidates), query_words(story_text))]
-    if config.LORE_VECTORS and candidates:
+    if config.LORE_VECTORS and candidates and embeddings.is_ready():
         try:
             ensure_embeddings(s, list(candidates.values()))
             rankings.append(search_vectors(s, list(candidates), story_text[-MAX_QUERY_CHARS:]))

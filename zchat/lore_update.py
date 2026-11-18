@@ -87,18 +87,19 @@ def update_due(path: list[Message]) -> bool:
 # ---------------------------------------------------------------- reading the model's answer
 
 
-def parse_changes(answer: str, limit: int = MAX_CHANGES) -> list[dict]:
-    """The model's JSON answer -> [{name, keys, text}]. Anything unreadable counts as no changes."""
+def parse_changes(answer: str, limit: int = MAX_CHANGES) -> list[dict] | None:
+    """The model's JSON answer -> [{name, keys, text}], or None if the answer can't be read
+    (no JSON, cut off, or no "changes" list). Entries that are missing a name or text are skipped."""
     start, end = answer.find("{"), answer.rfind("}")  # skips ```json fences and chatter around the JSON
     if start == -1 or end < start:
-        return []
+        return None
     try:
         data = json.loads(answer[start:end + 1])
     except (json.JSONDecodeError, RecursionError):
-        return []
+        return None
     items = data.get("changes") if isinstance(data, dict) else None
     if not isinstance(items, list):
-        return []
+        return None
 
     changes = []
     for item in items:
@@ -111,6 +112,8 @@ def parse_changes(answer: str, limit: int = MAX_CHANGES) -> list[dict]:
         raw_keys = item.get("keys") or []
         if isinstance(raw_keys, str):
             raw_keys = raw_keys.split(",")
+        if not isinstance(raw_keys, list):
+            raw_keys = []
         keys = [clean(k, one_line=True).replace(",", " ") for k in raw_keys if isinstance(k, str)]
         keys = [" ".join(k.split()) for k in keys if k.strip()]
         changes.append({"name": name, "keys": clean(", ".join(keys), 500, one_line=True), "text": text})
@@ -120,6 +123,14 @@ def parse_changes(answer: str, limit: int = MAX_CHANGES) -> list[dict]:
 
 
 # ---------------------------------------------------------------- applying an update
+
+
+def read_answer(answer: str, limit: int = MAX_CHANGES) -> list[dict]:
+    """parse_changes, but an unreadable answer is an error (so an update is tried again later)."""
+    changes = parse_changes(answer, limit)
+    if changes is None:
+        raise zai.ZaiError("Couldn't read the model's answer")
+    return changes
 
 
 def format_entries(versions: list[LoreVersion]) -> str:
@@ -132,8 +143,11 @@ async def update_lore(leaf_id: int | None) -> int | None:
     """Update the lorebook of the branch ending at `leaf_id` from the story since the last update.
 
     Returns the id of the reply the changes were saved on (the newest finished reply), or None if
-    there's no reply yet. Raises (zai.ZaiError, network errors) if the model call fails; then nothing
-    is saved, so the update is tried again after the next reply.
+    there's no reply yet. Raises (zai.ZaiError, network errors) if the model call fails or its answer
+    can't be read; then nothing is saved, so the update is tried again before the next reply.
+
+    At most the last 4 x `update_every_replies` messages are sent, so a chat that never had an
+    update (or had many failed ones) doesn't send its whole story.
     """
     with session_scope() as s:
         path = [m for m in path_to(s, leaf_id) if m.status not in ("pending", "streaming")]
@@ -143,17 +157,18 @@ async def update_lore(leaf_id: int | None) -> int | None:
         newest = replies[-1]
         conv = path[0].conversation
         current = lore.current_versions(s, conv.id, path)
+        start = max(last_note_index(path) + 1, newest + 1 - 4 * max(config.LORE_UPDATE_EVERY, 1))
         request = UPDATE_REQUEST.format(
             setting=conv.system_prompt.strip()[:4000] or "(none)",
             entries=format_entries(current),  # disabled ones too: still true, and it avoids duplicates
-            transcript=transcript(path[last_note_index(path) + 1:newest + 1]))
+            transcript=transcript(path[start:newest + 1]))
         model = config.usable_model(conv.model)
         note_on, conv_id = path[newest].id, conv.id
 
     answer = await zai.complete([{"role": "system", "content": UPDATE_SYSTEM},
                                  {"role": "user", "content": request}],
                                 model=model, max_tokens=3000, timeout=300)
-    changes = parse_changes(answer)
+    changes = read_answer(answer)
 
     with session_scope() as s:
         note_message = s.get(Message, note_on)
@@ -188,7 +203,7 @@ async def draft_from_prompt(system_prompt: str, model: str) -> list[dict]:
     answer = await zai.complete([{"role": "system", "content": DRAFT_SYSTEM},
                                  {"role": "user", "content": f"<setting>\n{system_prompt[:12000]}\n</setting>"}],
                                 model=model, max_tokens=4000, timeout=300)
-    return parse_changes(answer, limit=MAX_DRAFT_ENTRIES)
+    return read_answer(answer, limit=MAX_DRAFT_ENTRIES)
 
 
 def undo_update(s, m: Message) -> None:

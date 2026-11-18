@@ -349,7 +349,8 @@ def edit(mid: int, content: str = ""):
             m.content = content  # in-place: lets you steer a story by rewriting the narrator
             return render_message(s, m)
         chat.edit_user_message(s, m, content.strip())
-        return render_messages(s, m.conversation)
+        # A new branch, which can have different lore.
+        return render_messages(s, m.conversation), render_chat_lore(s, m.conversation, oob=True)
 
 
 @app.post("/regen")
@@ -357,7 +358,7 @@ def regen(mid: int):
     with session_scope() as s:
         m = s.get(Message, mid)
         chat.regenerate(s, m)
-        return render_messages(s, m.conversation)
+        return render_messages(s, m.conversation), render_chat_lore(s, m.conversation, oob=True)
 
 
 @app.get("/switch")

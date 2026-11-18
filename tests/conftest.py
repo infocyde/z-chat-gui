@@ -60,6 +60,7 @@ def fake_embeddings(monkeypatch):
         calls["queries"] += 1
         return fake_vector(text)
 
+    monkeypatch.setattr(embeddings, "_model", "fake model")  # counts as loaded
     monkeypatch.setattr(embeddings, "embed_passages", embed_passages)
     monkeypatch.setattr(embeddings, "embed_query", embed_query)
     return calls

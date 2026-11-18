@@ -33,7 +33,8 @@ def parse(raw: bytes) -> list[dict]:
 def entries_from(data) -> list[dict]:
     """Already-parsed JSON in any of the understood formats -> [{name, keys, text, enabled}]."""
     if isinstance(data, dict) and str(data.get("spec", "")).startswith("chara_card"):
-        book = (data.get("data") or {}).get("character_book")
+        card = data.get("data")
+        book = card.get("character_book") if isinstance(card, dict) else None
         if not isinstance(book, dict):
             raise ValueError("this character card has no lorebook")
         items = book.get("entries")
@@ -67,6 +68,8 @@ def entry_from(item: dict, number: int) -> dict | None:
     raw_keys = item.get("keys") or item.get("key") or []
     if isinstance(raw_keys, str):
         raw_keys = [raw_keys]
+    if not isinstance(raw_keys, list):
+        raw_keys = []
     # Our keys are comma-separated, so a comma inside one key becomes a space.
     keys = [clean(k, one_line=True).replace(",", " ") for k in raw_keys]
     keys = [" ".join(k.split()) for k in keys if k.strip()]

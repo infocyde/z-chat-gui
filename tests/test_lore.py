@@ -312,6 +312,13 @@ def test_falls_back_to_words_when_embedding_fails(s, monkeypatch):
     assert [v.name for v in lore.find_for_reply(s, conv, path)] == ["Mire Hag"]
 
 
+def test_words_only_until_the_model_has_loaded(s, monkeypatch, fake_embeddings):
+    monkeypatch.setattr(embeddings, "_model", None)  # still downloading, or it failed to load
+    conv, path = marsh_chat(s, "Is that the Mire Hag?")
+    assert [v.name for v in lore.find_for_reply(s, conv, path)] == ["Mire Hag"]
+    assert fake_embeddings == {"passages": 0, "queries": 0}
+
+
 def test_embeddings_are_made_once_and_kept(s, fake_embeddings):
     conv, path = marsh_chat(s, "Something rises from the bog.")
     lore.find_for_reply(s, conv, path)

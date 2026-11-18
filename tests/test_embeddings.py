@@ -26,3 +26,10 @@ def test_passage_text():
 
 def test_model_settings():
     assert embeddings.MODEL_NAME == "BAAI/bge-small-en-v1.5" and embeddings.DIMENSIONS == 384
+
+
+def test_is_ready_once_the_model_has_loaded(monkeypatch):
+    monkeypatch.setattr(embeddings, "_model", None)
+    assert not embeddings.is_ready()
+    monkeypatch.setattr(embeddings, "_model", "loaded")
+    assert embeddings.is_ready()

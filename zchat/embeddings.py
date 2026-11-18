@@ -22,6 +22,12 @@ _model = None
 _model_lock = threading.Lock()  # warm-up runs in a thread; don't load the model twice
 
 
+def is_ready() -> bool:
+    """True once the model has loaded. Until then the lorebook uses word search only, so a reply
+    never waits on the download (main.py loads the model in the background at startup)."""
+    return _model is not None
+
+
 def _get_model():
     global _model
     with _model_lock:
