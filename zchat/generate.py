@@ -52,7 +52,8 @@ async def run(mid: int) -> AsyncIterator[Event]:
         parent_id = m.parent_id
         path = path_to(s, parent_id)
         summarize_first = kind != "image" and story.summary_due(path, effective_model(m.conversation, path))
-        update_lore_first = kind != "image" and lore_update.update_due(path)
+        # With the Lorekeeper off, the lorebook isn't updated, searched or embedded.
+        update_lore_first = kind != "image" and m.conversation.lore_on and lore_update.update_due(path)
 
     if kind == "image":
         async for ev in _run_image(mid):
@@ -86,7 +87,7 @@ async def run(mid: int) -> AsyncIterator[Event]:
         path = path_to(s, parent_id)
         model = effective_model(conv, path)
         m.model = model
-        found = lore.find_for_reply(s, conv, path)
+        found = lore.find_for_reply(s, conv, path) if conv.lore_on else []
         m.lore_used = "\n".join(v.name for v in found)
         msgs = build_messages(conv, path, model, world_notes=lore.lore_block(found))
         thinking, effort, temperature = conv.thinking, conv.reasoning_effort, conv.temperature

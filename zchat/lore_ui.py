@@ -3,7 +3,7 @@ and the scenario editor's lorebook section. No database access here; routes pass
 
 from __future__ import annotations
 
-from fasthtml.common import (A, Button, Details, Div, Form, H2, Input, Label, P, Small, Span, Strong, Summary,
+from fasthtml.common import (A, Button, Details, Div, Form, H2, H3, Input, Label, P, Small, Span, Strong, Summary,
                              Textarea)
 
 from .lore import split_keys
@@ -66,8 +66,8 @@ def lore_form(*, post_url: str, cancel_url: str, target: str, hidden: dict, entr
 # ---------------------------------------------------------------- scenario editor
 
 
-def scenario_lore_list(scenario):
-    return lore_list(scenario.lore, list_id="scenario-lore",
+def scenario_lore_list(scenario, oob: bool = False):
+    return lore_list(scenario.lore, list_id="scenario-lore", oob=oob,
                      edit_url=f"/lore/scenario/form?sid={scenario.id}&lid=",
                      delete_url="/lore/scenario/delete?lid=",
                      empty_text="No entries yet. Add characters, places, monsters or items: only the ones the "
@@ -98,19 +98,59 @@ def scenario_lore_section(scenario):
             Div(import_btn,
                 A(icon("download", 15), "Export", href=f"/lore/scenario/export?sid={scenario.id}",
                   cls="btn btn-ghost"),
-                # Drafting takes a few seconds; stop double-clicks meanwhile.
-                Button(icon("wand", 15), "Draft from prompt", type="button", cls="btn btn-ghost",
-                       title="Let the AI pull characters, places and items out of the system prompt",
-                       hx_post=f"/lore/scenario/draft?sid={scenario.id}", hx_target="#scenario-lore",
-                       hx_swap="outerHTML", hx_disabled_elt="this"),
+                # Sends what's in the editor's prompt box. It can take a minute; stop double-clicks meanwhile.
+                Button(icon("wand", 15), "Move details into lorebook", type="button", cls="btn btn-ghost",
+                       title="Let the AI move details about characters, places and items out of the system "
+                             "prompt into entries, so they're only sent when the story needs them. "
+                             "You review it before anything changes.",
+                       hx_post=f"/lore/scenario/move?sid={scenario.id}", hx_include="#scenario-prompt",
+                       hx_target="#lore-move", hx_swap="outerHTML", hx_disabled_elt="this",
+                       hx_indicator="#lore-move-wait"),
                 Button(icon("plus", 15), "Add entry", type="button", cls="btn btn-primary",
                        hx_get=f"/lore/scenario/form?sid={scenario.id}", hx_target="#scenario-lore-new"),
                 cls="row gap wrap"),
             cls="row between"),
         P("Copied into each new chat started from this scenario. Before every reply, only the entries "
           "that match what's happening are sent.", cls="muted small"),
+        P("Reading the system prompt… this can take a minute.", id="lore-move-wait",
+          cls="htmx-indicator muted small"),
+        Div(id="lore-move"),  # the "Move details" review appears here
         scenario_lore_list(scenario),
         cls="lore-section stack tight")
+
+
+def move_review(scenario_id: int, original: str, shorter: str, entries: list[dict], taken: set[str]):
+    """Review "Move details into lorebook" before anything is saved: the shorter prompt (editable) and the
+    suggested entries (tick the ones to keep). Names already in the lorebook (`taken`, lower case) aren't offered.
+
+    Entries go back as parallel name/keys/text lists; "keep" holds the positions of the ticked ones.
+    """
+    offered = [e for e in entries if e["name"].lower() not in taken]
+    skipped = [e["name"] for e in entries if e["name"].lower() in taken]
+    rows = [Div(Label(Input(type="checkbox", name="keep", value=str(i), checked=True), Strong(e["name"]),
+                      cls="check"),
+                Div(*[Span(k, cls="tag tag-static") for k in split_keys(e["keys"])], cls="tags") if e["keys"] else None,
+                P(e["text"], cls="preview"),
+                Input(type="hidden", name="name", value=e["name"]),
+                Input(type="hidden", name="keys", value=e["keys"]),
+                Input(type="hidden", name="text", value=e["text"]),
+                cls="lore-row")
+            for i, e in enumerate(offered)]
+    return Form(
+        H3("Move details into the lorebook"),
+        P("Nothing has changed yet. Apply saves the shorter system prompt and the ticked entries. The prompt "
+          "is sent with every reply; entries only when the story touches them.", cls="muted small"),
+        Label(Span("New system prompt ", Small(f"{len(original.split())} → {len(shorter.split())} words",
+                                               cls="muted")),
+              Textarea(shorter, name="system_prompt", rows=12, required=True, cls="textarea mono")),
+        Details(Summary("Original system prompt"), P(original, cls="move-original")),
+        H3(f"New entries ({len(offered)})"),
+        *(rows or [P("No entries suggested.", cls="muted small")]),
+        P("Already in the lorebook, so not added again: " + ", ".join(skipped), cls="muted small") if skipped else None,
+        Div(Button("Cancel", type="button", cls="btn btn-ghost", onclick="this.closest('#lore-move').replaceChildren()"),
+            Button("Apply", type="submit", cls="btn btn-primary"), cls="row end gap"),
+        hx_post=f"/lore/scenario/move/apply?sid={scenario_id}", hx_target="#lore-move", hx_swap="outerHTML",
+        id="lore-move", cls="lore-move stack tight")
 
 
 # ---------------------------------------------------------------- chat drawer
@@ -120,10 +160,12 @@ def entry_count(n: int) -> str:
     return f"{n} entry" if n == 1 else f"{n} entries"
 
 
-def chat_lore_list(conv_id: int, versions: list, oob: bool = False):
-    """The chat's lorebook as this branch sees it. `versions` come from lore.current_versions."""
-    header = Div(Span(f"{entry_count(len(versions))} · only the entries that match what's happening are sent "
-                      "with each reply", cls="muted small"),
+def chat_lore_list(conv_id: int, versions: list, oob: bool = False, on: bool = True):
+    """The chat's lorebook as this branch sees it. `versions` come from lore.current_versions;
+    `on` is the chat's Lorekeeper switch."""
+    note = ("only the entries that match what's happening are sent with each reply" if on
+            else "The Lorekeeper is off, so nothing here is searched, sent or updated")
+    header = Div(Span(f"{entry_count(len(versions))} · {note}", cls="muted small"),
                  Button(icon("plus", 15), "Add entry", type="button", cls="btn btn-ghost",
                         hx_get=f"/lore/chat/form?cid={conv_id}", hx_target="#chat-lore-new"),
                  cls="row between")
@@ -142,11 +184,11 @@ def chat_lore_form(conv_id: int, version=None):
                      text=version.text if version else "", enabled=version.enabled if version else True)
 
 
-def chat_lore_drawer(conv_id: int, versions: list):
-    """The "Lorebook" drawer under the system prompt drawer on a chat page."""
+def chat_lore_drawer(lore_list):
+    """The "Lorebook" drawer under the system prompt drawer on a chat page, around chat_lore_list."""
     return Details(Summary("Lorebook", Small(" · this chat's own copy; edits here don't change the scenario",
                                              cls="muted")),
-                   chat_lore_list(conv_id, versions),
+                   lore_list,
                    cls="system-drawer lore-drawer")
 
 

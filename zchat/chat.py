@@ -122,7 +122,7 @@ def fork(s: Session, conv: Conversation, upto: Message) -> Conversation:
     new = Conversation(title=f"{conv.title} (fork)"[:200], scenario_id=conv.scenario_id,
                        system_prompt=conv.system_prompt, model=conv.model, thinking=conv.thinking,
                        reasoning_effort=conv.reasoning_effort, temperature=conv.temperature,
-                       forked_from_message_id=upto.id)
+                       lore_on=conv.lore_on, forked_from_message_id=upto.id)
     s.add(new)
     s.flush()
     parent: int | None = None

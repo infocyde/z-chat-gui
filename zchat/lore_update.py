@@ -1,4 +1,4 @@
-"""The lorebook keeping itself up to date, and drafting a starter lorebook.
+"""The lorebook keeping itself up to date, and moving details out of a scenario's system prompt.
 
 Every `update_every_replies` replies (config.yaml), before the next reply is written, the chat's
 model reads the current lorebook and the story since the last update, and answers with changes:
@@ -23,7 +23,8 @@ from .scenario_json import clean
 from .story import transcript
 
 MAX_CHANGES = 8
-MAX_DRAFT_ENTRIES = 12
+MAX_MOVE_ENTRIES = 30
+MAX_MOVE_PROMPT_CHARS = 30_000  # the model writes the whole shorter prompt back, so it has to fit in one answer
 MAX_ENTRY_CHARS = 2000
 
 NO_CHANGES = "No changes."
@@ -55,12 +56,16 @@ UPDATE_REQUEST = """<setting>
 
 Reply with the JSON changes."""
 
-DRAFT_SYSTEM = (
-    "You start the lorebook for an interactive story: short notes the narrator is shown when the story "
-    "touches them. From the setting below, make one entry for each named character, place, faction, "
-    "creature and item. Each text is a few plain sentences, under 120 words, with only what the setting "
-    "says. Keys are the words that bring the entry up in the story. "
-    'Reply with JSON only: {"changes": [{"name": "...", "keys": ["..."], "text": "..."}]}'
+MOVE_SYSTEM = (
+    "You tidy the system prompt of an interactive story. The system prompt is sent with every reply; "
+    "lorebook entries are sent only when the story mentions them. Split the prompt in two. Keep in the "
+    "system prompt what every scene needs: the narrator's role and style, the rules, the player's character, "
+    "the premise. Move details about specific characters, places, items, creatures and factions that only "
+    "matter when they come up into lorebook entries, one per thing. Keep the wording of what stays; only "
+    "take out what moved and mend the sentences around it. Never lose a fact: everything you take out must "
+    "be in an entry. Each entry's text is a few plain sentences with the facts from the prompt. Keys are the "
+    "words that bring the entry up in the story. "
+    'Reply with JSON only: {"system_prompt": "...", "entries": [{"name": "...", "keys": ["..."], "text": "..."}]}'
 )
 
 
@@ -87,9 +92,8 @@ def update_due(path: list[Message]) -> bool:
 # ---------------------------------------------------------------- reading the model's answer
 
 
-def parse_changes(answer: str, limit: int = MAX_CHANGES) -> list[dict] | None:
-    """The model's JSON answer -> [{name, keys, text}], or None if the answer can't be read
-    (no JSON, cut off, or no "changes" list). Entries that are missing a name or text are skipped."""
+def read_json(answer: str) -> dict | None:
+    """The JSON object in the model's answer, or None if there isn't a readable one (e.g. it was cut off)."""
     start, end = answer.find("{"), answer.rfind("}")  # skips ```json fences and chatter around the JSON
     if start == -1 or end < start:
         return None
@@ -97,10 +101,21 @@ def parse_changes(answer: str, limit: int = MAX_CHANGES) -> list[dict] | None:
         data = json.loads(answer[start:end + 1])
     except (json.JSONDecodeError, RecursionError):
         return None
-    items = data.get("changes") if isinstance(data, dict) else None
+    return data if isinstance(data, dict) else None
+
+
+def parse_changes(answer: str, limit: int = MAX_CHANGES) -> list[dict] | None:
+    """The model's JSON answer -> [{name, keys, text}], or None if the answer can't be read
+    (no JSON, cut off, or no "changes" list). Entries that are missing a name or text are skipped."""
+    data = read_json(answer)
+    items = data.get("changes") if data else None
     if not isinstance(items, list):
         return None
+    return clean_entries(items, limit)
 
+
+def clean_entries(items: list, limit: int) -> list[dict]:
+    """The model's entries -> [{name, keys, text}], skipping any without a name or text."""
     changes = []
     for item in items:
         if not isinstance(item, dict) or not isinstance(item.get("text"), str):
@@ -197,13 +212,19 @@ async def update_lore(leaf_id: int | None) -> int | None:
     return note_on
 
 
-async def draft_from_prompt(system_prompt: str, model: str) -> list[dict]:
-    """Starter lorebook entries pulled out of a scenario's system prompt: [{name, keys, text}].
-    Raises (zai.ZaiError, network errors) if the model call fails."""
-    answer = await zai.complete([{"role": "system", "content": DRAFT_SYSTEM},
-                                 {"role": "user", "content": f"<setting>\n{system_prompt[:12000]}\n</setting>"}],
-                                model=model, max_tokens=4000, timeout=300)
-    return read_answer(answer, limit=MAX_DRAFT_ENTRIES)
+async def move_details(system_prompt: str, model: str) -> tuple[str, list[dict]]:
+    """Split a scenario's system prompt: (the shorter prompt, [{name, keys, text}] for the details taken out).
+    Nothing is saved; the person reviews it first. Raises (zai.ZaiError, network errors) on failure."""
+    if len(system_prompt) > MAX_MOVE_PROMPT_CHARS:
+        raise ValueError(f"the system prompt is too long to do in one go (over {MAX_MOVE_PROMPT_CHARS:,} characters)")
+    answer = await zai.complete([{"role": "system", "content": MOVE_SYSTEM},
+                                 {"role": "user", "content": f"<system_prompt>\n{system_prompt}\n</system_prompt>"}],
+                                model=model, max_tokens=16000, timeout=600)
+    data = read_json(answer) or {}
+    shorter, items = data.get("system_prompt"), data.get("entries")
+    if not isinstance(shorter, str) or not shorter.strip() or not isinstance(items, list):
+        raise zai.ZaiError("Couldn't read the model's answer")  # an empty prompt would wipe the scenario
+    return clean(shorter), clean_entries(items, MAX_MOVE_ENTRIES)
 
 
 def undo_update(s, m: Message) -> None:

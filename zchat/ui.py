@@ -361,6 +361,18 @@ def reasoning_control(model_id: str, thinking: bool, effort: str, oob: bool = Fa
     return Span(control, id="reasoning-control", cls="reasoning-control", hx_swap_oob="true" if oob else None)
 
 
+def lore_switch(on: bool, cid: int | None = None, oob: bool = False):
+    """The Lorekeeper switch: whether this chat uses its lorebook. On the new-chat page it's a form field
+    (`lore_on`); in a chat (`cid`) it saves as soon as it's flipped."""
+    saves = dict(hx_post=f"/lore/switch?cid={cid}", hx_trigger="change", hx_swap="none") if cid else {}
+    return Label(Input(type="checkbox", name="on" if cid else "lore_on", value="1", checked=on, role="switch",
+                       **saves),
+                 "Lorekeeper", id="lore-switch", cls="switch", hx_swap_oob="true" if oob else None,
+                 title="The Lorekeeper looks up this chat's lorebook before each reply, sends the entries that "
+                       "match the story, and keeps the lorebook up to date as the story goes. Off: the lorebook "
+                       "is kept, but nothing is searched, sent or updated.")
+
+
 def _usd(amount: float) -> str:
     return f"${amount:.2f}" if amount >= 0.1 else f"${amount:g}"  # $0.50, $1.40, but $0.075 stays exact
 
@@ -426,6 +438,7 @@ def stats_view(conv: Conversation, usage: Usage, ctx_used: int, ctx_model: str |
         Div(Div(cls="ctx-fill", style=f"width:{pct}%"), cls="ctx-bar",
             title=f"Context: {ctx_used:,} of {window:,} tokens ({pct}%) on this branch"),
         Span(f"{fmt(ctx_used)} / {fmt(window)}", cls="ctx-label"),
+        lore_switch(conv.lore_on, cid=conv.id),
         Span(f"in {fmt(usage.prompt)} · out {fmt(usage.completion)} · {cache_pct}% cached · {fmt_cost(usage)}",
              cls="spend",
              title=f"This chat, all branches: prompt {usage.prompt:,} (cached {usage.cached:,}), "
@@ -492,6 +505,7 @@ def new_chat_page(scenarios: list[Scenario], scenario: Scenario | None):
                                             hx_target="#reasoning-control", hx_swap="outerHTML")),
                 reasoning_control(config.DEFAULT_MODEL, False, config.DEFAULT_EFFORT),
                 model_price(config.DEFAULT_MODEL),
+                lore_switch(on=scenario is not None),  # on for a scenario (a story), off for a plain chat
                 cls="setup-row"),
             Details(Summary("System prompt"), system_prompt_area(scenario.system_prompt if scenario else ""),
                     open=True, cls="setup-prompt"),
@@ -593,6 +607,12 @@ def category_picker(current: str, known: list[str]):
         cls="stack tight")
 
 
+def scenario_prompt_area(text: str, oob: bool = False):
+    """The scenario editor's system prompt box (refreshed when "Move details into lorebook" is applied)."""
+    return Textarea(text, name="system_prompt", id="scenario-prompt", rows=18, cls="textarea mono",
+                    hx_swap_oob="true" if oob else None)
+
+
 def scenario_editor(s: Scenario | None, known_categories: list[str], lore_section=None):
     """`lore_section` comes from lore_ui.scenario_lore_section (built by the route, so ui.py needn't import it)."""
     return Div(
@@ -603,8 +623,7 @@ def scenario_editor(s: Scenario | None, known_categories: list[str], lore_sectio
             Label("Short description", Input(name="description", value=s.description if s else "", cls="input",
                                              placeholder="Optional one-liner shown on the card")),
             category_picker(s.categories if s else "", known_categories),
-            Label("System prompt", Textarea(s.system_prompt if s else "", name="system_prompt", rows=18,
-                                            cls="textarea mono")),
+            Label("System prompt", scenario_prompt_area(s.system_prompt if s else "")),
             Input(type="hidden", name="sid", value=s.id if s else ""),
             Div(Div(Button(icon("trash", 15), "Delete", type="button", cls="btn btn-danger",
                            hx_post=f"/scenarios/delete?sid={s.id}",

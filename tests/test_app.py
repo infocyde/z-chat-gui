@@ -398,7 +398,7 @@ def test_reply_sends_and_shows_the_lore_it_used(client, monkeypatch):
         s.flush()
         sid = sc.id
 
-    r = client.post("/new", data={"content": "I look for the hag.", "model": "glm-4.7-flash", "scenario_id": sid,
+    r = client.post("/new", data={"content": "I look for the hag.", "model": "glm-4.7-flash", "scenario_id": sid, "lore_on": "1",
                                   "system_prompt": "A marsh."}, headers={"HX-Request": "true"})
     cid = re.search(r"/c/(\d+)", r.headers["HX-Redirect"]).group(1)
     mid = re.search(r'data-stream-url="/stream\?mid=(\d+)"', client.get(f"/c/{cid}").text).group(1)
@@ -592,7 +592,8 @@ def select_version(cid):
 
 def start_chat_with_one_reply(client) -> tuple[str, str]:
     """A new chat whose first reply has streamed. Returns (chat id, reply id)."""
-    r = client.post("/new", data={"content": "I walk in.", "model": "glm-4.7-flash"}, headers={"HX-Request": "true"})
+    r = client.post("/new", data={"content": "I walk in.", "model": "glm-4.7-flash", "lore_on": "1"},
+                    headers={"HX-Request": "true"})
     cid = re.search(r"/c/(\d+)", r.headers["HX-Redirect"]).group(1)
     first = re.search(r'data-stream-url="/stream\?mid=(\d+)"', client.get(f"/c/{cid}").text).group(1)
     events = client.get(f"/stream?mid={first}").text
@@ -647,41 +648,6 @@ def test_failed_update_does_not_stop_the_reply(client, monkeypatch):
     assert "update the lorebook (rate limited)" in events and "event: finished" in events
 
 
-def test_draft_button_adds_entries_and_skips_existing_names(client, monkeypatch):
-    import json
-
-    async def fake_complete(messages, model=None, max_tokens=0, timeout=0):
-        return json.dumps({"changes": [{"name": "mire hag", "keys": ["hag"], "text": "Duplicate."},
-                                       {"name": "Gloomfang", "keys": ["wolf"], "text": "Cave wolf."}]})
-
-    monkeypatch.setattr(zai, "complete", fake_complete)
-    client.post("/scenarios/save", data={"name": "Lore Draft", "system_prompt": "A marsh.", "categories": "Fantasy"})
-    sid = scenario_named("Lore Draft").id
-    client.post("/lore/scenario/save", data={"sid": sid, "name": "Mire Hag", "text": "Swamp witch.", "enabled": "1"})
-    assert f'hx-post="/lore/scenario/draft?sid={sid}"' in client.get(f"/scenarios/edit?sid={sid}").text
-
-    r = client.post(f"/lore/scenario/draft?sid={sid}", headers={"HX-Request": "true"})
-
-    assert "Drafted 1 entry from the system prompt" in r.text and "Gloomfang" in r.text
-    assert lore_names(sid) == ["Mire Hag", "Gloomfang"]
-
-
-def test_draft_needs_a_system_prompt_and_reports_failures(client, monkeypatch):
-    client.post("/scenarios/save", data={"name": "Lore Draft Empty", "categories": "Fantasy"})
-    sid = scenario_named("Lore Draft Empty").id
-    r = client.post(f"/lore/scenario/draft?sid={sid}", headers={"HX-Request": "true"})
-    assert "Write a system prompt first" in r.text
-
-    async def failing_complete(messages, model=None, max_tokens=0, timeout=0):
-        raise zai.ZaiError("rate limited")
-
-    monkeypatch.setattr(zai, "complete", failing_complete)
-    client.post("/scenarios/save", data={"sid": sid, "name": "Lore Draft Empty", "system_prompt": "A marsh.",
-                                         "categories": "Fantasy"})
-    r = client.post(f"/lore/scenario/draft?sid={sid}", headers={"HX-Request": "true"})
-    assert "Couldn't draft a lorebook: rate limited" in r.text and lore_names(sid) == []
-
-
 def test_edit_and_regenerate_refresh_the_lorebook_drawer(client):
     # Both move to a new branch, which can have different lore.
     cid, first = start_chat_with_one_reply(client)
@@ -695,3 +661,175 @@ def test_edit_and_regenerate_refresh_the_lorebook_drawer(client):
 
     r = client.post(f"/regen?mid={first}", headers={"HX-Request": "true"})
     assert 'id="chat-lore"' in r.text and 'hx-swap-oob="true"' in r.text
+
+
+MOVED = {"system_prompt": "You narrate a marsh. Keep it grim.",
+         "entries": [{"name": "mire hag", "keys": ["hag"], "text": "Already there."},
+                     {"name": "Gloomfang", "keys": ["wolf"], "text": "A cave wolf."},
+                     {"name": "Sunken Bell", "keys": ["bell"], "text": "Rings under the water."}]}
+
+
+def test_move_details_shows_a_review_and_saves_nothing_yet(client, monkeypatch):
+    import json
+
+    from zchat.db import session_scope
+    from zchat.models import Scenario
+
+    fake_answers = []
+
+    async def fake_complete(messages, model=None, max_tokens=0, timeout=0):
+        fake_answers.append(messages[-1]["content"])
+        return json.dumps(MOVED)
+
+    monkeypatch.setattr(zai, "complete", fake_complete)
+    long_prompt = "You narrate a marsh. Keep it grim. Gloomfang is a cave wolf. The Sunken Bell rings under the water."
+    client.post("/scenarios/save", data={"name": "Lore Move", "system_prompt": long_prompt, "categories": "Fantasy"})
+    sid = scenario_named("Lore Move").id
+    client.post("/lore/scenario/save", data={"sid": sid, "name": "Mire Hag", "text": "Swamp witch.", "enabled": "1"})
+
+    page = client.get(f"/scenarios/edit?sid={sid}").text
+    assert "Draft from prompt" not in page
+    assert f'hx-post="/lore/scenario/move?sid={sid}"' in page and 'id="scenario-prompt"' in page
+
+    # What's in the editor box is used, even if it isn't saved yet.
+    r = client.post(f"/lore/scenario/move?sid={sid}", data={"system_prompt": long_prompt + " Unsaved."},
+                    headers={"HX-Request": "true"})
+    assert "Unsaved." in fake_answers[0]
+    assert 'id="lore-move"' in r.text and "Gloomfang" in r.text and "Sunken Bell" in r.text
+    assert "You narrate a marsh. Keep it grim." in r.text
+    assert "20 → 7 words" in r.text
+    assert "Already in the lorebook, so not added again: mire hag" in r.text
+    assert f'hx-post="/lore/scenario/move/apply?sid={sid}"' in r.text
+
+    assert lore_names(sid) == ["Mire Hag"]
+    with session_scope() as s:
+        assert s.get(Scenario, sid).system_prompt == long_prompt
+
+
+def test_applying_a_move_saves_the_prompt_and_the_kept_entries(client):
+    from zchat.db import session_scope
+    from zchat.models import Scenario
+
+    client.post("/scenarios/save", data={"name": "Lore Move Apply", "system_prompt": "Long.", "categories": "Fantasy"})
+    sid = scenario_named("Lore Move Apply").id
+    # Entries come back as parallel lists; "keep" holds the ticked ones' positions. The prompt may be edited.
+    form = {"system_prompt": "Short, edited.",
+            "name": ["Gloomfang", "Sunken Bell"], "keys": ["wolf", "bell"],
+            "text": ["A cave wolf.", "Rings under the water."], "keep": ["1"]}
+    r = client.post(f"/lore/scenario/move/apply?sid={sid}", data=form, headers={"HX-Request": "true"})
+
+    assert lore_names(sid) == ["Sunken Bell"]
+    with session_scope() as s:
+        assert s.get(Scenario, sid).system_prompt == "Short, edited."
+    # The review closes, and the editor's prompt box and the list are refreshed.
+    assert 'id="lore-move"' in r.text and 'id="scenario-prompt"' in r.text and "Short, edited." in r.text
+    assert 'id="scenario-lore"' in r.text and "Moved 1 entry into the lorebook" in r.text
+
+
+def test_applying_a_move_needs_a_prompt(client):
+    client.post("/scenarios/save", data={"name": "Lore Move Empty", "system_prompt": "Long.", "categories": "Fantasy"})
+    sid = scenario_named("Lore Move Empty").id
+    r = client.post(f"/lore/scenario/move/apply?sid={sid}", data={"system_prompt": "  "},
+                    headers={"HX-Request": "true"})
+    assert "The system prompt can't be empty" in r.text
+
+
+def test_move_details_needs_a_prompt_and_reports_failures(client, monkeypatch):
+    client.post("/scenarios/save", data={"name": "Lore Move Fail", "categories": "Fantasy"})
+    sid = scenario_named("Lore Move Fail").id
+    r = client.post(f"/lore/scenario/move?sid={sid}", data={"system_prompt": ""}, headers={"HX-Request": "true"})
+    assert "Write a system prompt first" in r.text
+
+    async def failing_complete(messages, model=None, max_tokens=0, timeout=0):
+        raise zai.ZaiError("rate limited")
+
+    monkeypatch.setattr(zai, "complete", failing_complete)
+    r = client.post(f"/lore/scenario/move?sid={sid}", data={"system_prompt": "A marsh."},
+                    headers={"HX-Request": "true"})
+    assert "Couldn't move the details: rate limited" in r.text and lore_names(sid) == []
+
+
+# ================================================================ part B: the Lorekeeper switch
+
+
+def test_lorekeeper_switch_on_the_new_chat_page(client):
+    client.post("/scenarios/save", data={"name": "Lore Switch", "system_prompt": "A marsh.", "categories": "Fantasy"})
+    sid = scenario_named("Lore Switch").id
+
+    def switch(html):
+        return re.search(r'<input[^>]*name="lore_on"[^>]*>', html).group(0)
+
+    assert "checked" not in switch(client.get("/").text)  # a plain chat: off
+    assert "checked" in switch(client.get(f"/?scenario={sid}").text)  # a story: on
+    # Picking a scenario in the dropdown turns it on too.
+    r = client.get(f"/scenario_prompt?scenario_id={sid}")
+    assert 'id="lore-switch"' in r.text and "checked" in switch(r.text)
+    assert "checked" not in switch(client.get("/scenario_prompt?scenario_id=").text)
+
+
+def test_lorekeeper_off_means_no_search_no_embedding_no_updates(client, monkeypatch, fake_embeddings):
+    import json
+
+    from zchat import config
+    from zchat.db import session_scope
+    from zchat.models import Conversation, Message
+
+    monkeypatch.setattr(config, "LORE_UPDATE_EVERY", 1)
+    calls = []
+
+    async def fake_complete(messages, model=None, max_tokens=0, timeout=0):
+        calls.append(messages)
+        return json.dumps({"changes": [{"name": "Barkeep", "text": "Grumpy."}]})
+
+    monkeypatch.setattr(zai, "complete", fake_complete)
+    r = client.post("/new", data={"content": "I meet the Mire Hag.", "model": "glm-4.7-flash"},
+                    headers={"HX-Request": "true"})  # no lore_on: the switch was off
+    cid = int(re.search(r"/c/(\d+)", r.headers["HX-Redirect"]).group(1))
+    client.post("/lore/chat/save", data={"cid": cid, "name": "Mire Hag", "keys": "hag", "text": "Swamp witch.",
+                                         "enabled": "1"})
+    with session_scope() as s:
+        assert s.get(Conversation, cid).lore_on is False
+    first = re.search(r'data-stream-url="/stream\?mid=(\d+)"', client.get(f"/c/{cid}").text).group(1)
+    client.get(f"/stream?mid={first}")
+    r = client.post(f"/send?cid={cid}", data={"content": "The hag again."}, headers={"HX-Request": "true"})
+    second = re.search(r'data-stream-url="/stream\?mid=(\d+)"', r.text).group(1)
+    events = client.get(f"/stream?mid={second}").text
+
+    assert "Updating the lorebook" not in events  # an update was due, but it's off
+    assert not [c for c in calls if "<lorebook>" in c[-1]["content"]]  # (the title call is fine)
+    assert fake_embeddings == {"passages": 0, "queries": 0}
+    with session_scope() as s:
+        assert s.get(Message, int(second)).lore_used == ""
+
+
+def test_lorekeeper_switch_in_the_chat_header(client):
+    from zchat.db import session_scope
+    from zchat.models import Conversation
+
+    r = client.post("/new", data={"content": "Hello.", "model": "glm-4.7-flash", "lore_on": "1"},
+                    headers={"HX-Request": "true"})
+    cid = int(re.search(r"/c/(\d+)", r.headers["HX-Redirect"]).group(1))
+    page = client.get(f"/c/{cid}").text
+    assert f'hx-post="/lore/switch?cid={cid}"' in page and "Lorekeeper" in page
+
+    r = client.post(f"/lore/switch?cid={cid}", headers={"HX-Request": "true"})  # unchecked: nothing sent
+    with session_scope() as s:
+        assert s.get(Conversation, cid).lore_on is False
+    assert 'id="chat-lore"' in r.text and "The Lorekeeper is off" in r.text
+
+    client.post(f"/lore/switch?cid={cid}", data={"on": "1"}, headers={"HX-Request": "true"})
+    with session_scope() as s:
+        assert s.get(Conversation, cid).lore_on is True
+
+
+def test_fork_keeps_the_lorekeeper_setting(s):
+    from zchat import chat as chat_module
+    from zchat.models import Conversation
+
+    conv = Conversation(model="glm-4.7-flash", system_prompt="", lore_on=False)
+    s.add(conv)
+    s.flush()
+    user, reply = chat_module.send_user_message(s, conv, "hi")
+    reply.content, reply.status = "hello", "done"
+    s.flush()
+    assert chat_module.fork(s, conv, reply).lore_on is False

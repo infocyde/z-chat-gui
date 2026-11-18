@@ -68,7 +68,9 @@ class Conversation(Base):
         ForeignKey("scenarios.id", ondelete="SET NULL"), nullable=True, index=True)
     system_prompt: Mapped[str] = mapped_column(Text, default="")
     model: Mapped[str] = mapped_column(String(64))
-    thinking: Mapped[bool] = mapped_column(Boolean, default=False)  # on/off, for models with a thinking switch
+    thinking: Mapped[bool] = mapped_column(Boolean, default=False)
+    # The Lorekeeper switch: search, send and update the lorebook for this chat.
+    lore_on: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")  # on/off, for models with a thinking switch
     # low | high | max, for models that always think (GLM-5.3 family)
     reasoning_effort: Mapped[str] = mapped_column(String(16), default="low", server_default="low")
     temperature: Mapped[float | None] = mapped_column(Float, nullable=True)

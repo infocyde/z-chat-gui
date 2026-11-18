@@ -10,7 +10,7 @@ import json
 from datetime import datetime, timedelta
 
 import httpx
-from fasthtml.common import (Div, FileResponse, Link, Meta, P, Redirect, Response, Script, Span,
+from fasthtml.common import (Div, FileResponse, HtmxResponseHeaders, Link, Meta, P, Redirect, Response, Script, Span,
                              StreamingResponse, fast_app, serve, to_xml)
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -150,7 +150,8 @@ def render_messages(s: Session, conv: Conversation) -> list:
 
 def render_chat_lore(s: Session, conv: Conversation, oob: bool = False):
     """The chat's lorebook list, as the active branch sees it."""
-    return lore_ui.chat_lore_list(conv.id, lore.current_versions(s, conv.id, chat.active_path(s, conv)), oob=oob)
+    return lore_ui.chat_lore_list(conv.id, lore.current_versions(s, conv.id, chat.active_path(s, conv)), oob=oob,
+                                  on=conv.lore_on)
 
 
 def render_stats(s: Session, conv: Conversation, oob: bool = False):
@@ -216,7 +217,7 @@ def conversation_page(cid: int):
         if conv is None:
             return Redirect("/")
         header = ui.chat_header(conv, render_stats(s, conv))
-        drawer = lore_ui.chat_lore_drawer(cid, lore.current_versions(s, cid, chat.active_path(s, conv)))
+        drawer = lore_ui.chat_lore_drawer(render_chat_lore(s, conv))
         return ui.page(conv.title, ui.chat_page(conv, header, render_messages(s, conv), drawer),
                        sidebar=sidebar(s, conv_id=cid))
 
@@ -226,7 +227,7 @@ def scenario_prompt(scenario_id: str = ""):
     """Fill the system-prompt box when a scenario is picked on the new-chat page."""
     with session_scope() as s:
         sc = s.get(Scenario, int(scenario_id)) if scenario_id.isdigit() else None
-        return ui.system_prompt_area(sc.system_prompt if sc else "")
+        return ui.system_prompt_area(sc.system_prompt if sc else ""), ui.lore_switch(sc is not None, oob=True)
 
 
 # ---------------------------------------------------------------- sending messages
@@ -247,7 +248,8 @@ async def new_chat(req):
                             system_prompt=(form.get("system_prompt") or "").strip(),
                             scenario_id=int(scenario_id) if scenario_id.isdigit() else None,
                             thinking=bool(form.get("thinking")),
-                            reasoning_effort=form.get("reasoning_effort") or config.DEFAULT_EFFORT)
+                            reasoning_effort=form.get("reasoning_effort") or config.DEFAULT_EFFORT,
+                            lore_on=bool(form.get("lore_on")))
         s.add(conv)
         s.flush()
         scenario = s.get(Scenario, conv.scenario_id) if conv.scenario_id else None
@@ -726,34 +728,49 @@ async def scenario_lore_import(req, sid: int):
         return lore_ui.scenario_lore_list(sc), notice, error_toast(errors)
 
 
-@app.post("/lore/scenario/draft")
-async def scenario_lore_draft(sid: int):
-    """"Draft from prompt": the AI writes starter entries from the system prompt. Names already there are skipped."""
-    with session_scope() as s:
-        system_prompt = get_scenario(s, sid).system_prompt.strip()
+@app.post("/lore/scenario/move")
+async def scenario_lore_move(sid: int, system_prompt: str = ""):
+    """"Move details into lorebook": the AI splits the prompt in the editor box. Shows a review; saves nothing."""
+    system_prompt = system_prompt.strip()
     if not system_prompt:
-        with session_scope() as s:
-            return lore_ui.scenario_lore_list(get_scenario(s, sid)), error_toast(
-                ["Write a system prompt first: the draft is made from it."])
+        return Div(id="lore-move"), error_toast(["Write a system prompt first: the details are moved out of it."])
     try:
-        drafted = await lore_update.draft_from_prompt(system_prompt, config.DEFAULT_MODEL)
+        shorter, entries = await lore_update.move_details(system_prompt, config.DEFAULT_MODEL)
     except Exception as e:
-        with session_scope() as s:
-            return lore_ui.scenario_lore_list(get_scenario(s, sid)), error_toast([f"Couldn't draft a lorebook: {e}"])
+        return Div(id="lore-move"), error_toast([f"Couldn't move the details: {e}"])
+    with session_scope() as s:
+        taken = {e.name.lower() for e in get_scenario(s, sid).lore}
+    return lore_ui.move_review(sid, system_prompt, shorter, entries, taken)
+
+
+@app.post("/lore/scenario/move/apply")
+async def scenario_lore_move_apply(req, sid: int):
+    """Save a reviewed "Move details": the (maybe edited) shorter prompt and the ticked entries."""
+    form = await req.form()
+    system_prompt = (form.get("system_prompt") or "").strip()
+    if not system_prompt:
+        return error_toast(["The system prompt can't be empty."]), HtmxResponseHeaders(reswap="none")
+    names, keys, texts = form.getlist("name"), form.getlist("keys"), form.getlist("text")
+    keep = sorted({int(k) for k in form.getlist("keep") if k.isdigit() and int(k) < len(names)})
     with session_scope() as s:
         sc = get_scenario(s, sid)
+        sc.system_prompt = system_prompt
         taken = {e.name.lower() for e in sc.lore}
         added = 0
-        for entry in drafted:
-            if entry["name"].lower() in taken:
+        for i in keep:
+            name = scenario_json.clean(names[i], 200, one_line=True)
+            text = scenario_json.clean(texts[i] if i < len(texts) else "", lore_update.MAX_ENTRY_CHARS)
+            if not name or not text or name.lower() in taken:
                 continue
-            sc.lore.append(ScenarioLore(name=entry["name"], keys=entry["keys"], text=entry["text"]))
-            taken.add(entry["name"].lower())
+            sc.lore.append(ScenarioLore(name=name, keys=scenario_json.clean(keys[i] if i < len(keys) else "", 500,
+                                                                             one_line=True), text=text))
+            taken.add(name.lower())
             added += 1
         s.flush()
-        notice = info_toast([f"Drafted {lore_ui.entry_count(added)} from the system prompt. "
-                             "Edit or delete any you don't want."])
-        return lore_ui.scenario_lore_list(sc), notice
+        return (Div(id="lore-move"), lore_ui.scenario_lore_list(sc, oob=True),
+                ui.scenario_prompt_area(sc.system_prompt, oob=True),
+                info_toast([f"Moved {lore_ui.entry_count(added)} into the lorebook and saved the shorter "
+                            "system prompt."]))
 
 
 @app.get("/lore/scenario/export")
@@ -811,6 +828,15 @@ def chat_lore_delete(vid: int):
         s.delete(version.entry)
         s.flush()
         return render_chat_lore(s, conv)
+
+
+@app.post("/lore/switch")
+def lore_switch(cid: int, on: str = ""):
+    """The Lorekeeper switch in a chat's header (an unchecked box sends nothing, so "" means off)."""
+    with session_scope() as s:
+        conv = get_conv(s, cid)
+        conv.lore_on = bool(on)
+        return render_chat_lore(s, conv, oob=True)
 
 
 @app.post("/lore/undo")

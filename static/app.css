@@ -437,7 +437,7 @@ body.busy #send-btn { display: none; }
 .lore-row .tags { margin-top: 4px; min-height: 0; }
 .tag.tag-static, .tag.tag-static:hover { background: var(--surface-hover); color: var(--text-muted); cursor: default; }
 .tag.tag-off { background: transparent; color: var(--text-muted); border: 1px dashed var(--border); }
-.lore-form label.check { display: flex; flex-direction: row; align-items: center; gap: 6px; font-size: 0.85rem; }
+.lore-form label.check, .lore-move label.check { display: flex; flex-direction: row; align-items: center; gap: 6px; font-size: 0.85rem; }
 .lore-used { color: var(--text-muted); }
 .lore-drawer .lore-list { max-height: 50vh; overflow-y: auto; padding-bottom: 14px; }
 .lore-drawer .lore-row, .lore-drawer .lore-form { background: var(--bg); }
@@ -448,3 +448,11 @@ div.lore-note { display: flex; align-items: center; gap: 8px; border: none; padd
 .lore-note[open] > summary { margin-bottom: 8px; }
 .lore-note .preview { margin: 2px 0 0; color: var(--text-muted); white-space: pre-wrap; }
 .row.wrap { flex-wrap: wrap; justify-content: flex-end; }
+
+/* "Move details into lorebook" review in the scenario editor */
+.lore-move label.check strong { color: var(--text); }
+.lore-move:not(:empty) { border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin: 8px 0; }
+.lore-move h3 { margin: 4px 0 0; font-size: 15px; }
+.move-original { white-space: pre-wrap; max-height: 260px; overflow: auto; font-size: 13px; }
+#lore-move-wait { display: none; }
+#lore-move-wait.htmx-request { display: block; opacity: 1; }  /* only while "Move details" is working */

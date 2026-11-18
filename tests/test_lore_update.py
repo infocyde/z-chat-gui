@@ -1,4 +1,4 @@
-"""The lorebook updating itself every N replies, and drafting a starter lorebook."""
+"""The lorebook updating itself every N replies, and moving details out of a system prompt."""
 
 import json
 
@@ -188,12 +188,6 @@ async def test_unreadable_answer_is_tried_again(monkeypatch):
         assert s.get(Message, leaf).lore_note == ""  # that stretch of story is read again next time
 
 
-async def test_unreadable_draft_is_an_error(monkeypatch):
-    monkeypatch.setattr(zai, "complete", FakeComplete("Here are some ideas for your world!"))
-    with pytest.raises(zai.ZaiError, match="Couldn't read the model's answer"):
-        await lore_update.draft_from_prompt("A marsh.", "glm-4.7-flash")
-
-
 async def test_a_long_gap_sends_only_the_newest_messages(monkeypatch):
     # An old chat with no updates yet (or many failed ones) doesn't send the whole story.
     monkeypatch.setattr(config, "LORE_UPDATE_EVERY", 2)
@@ -209,17 +203,6 @@ async def test_a_long_gap_sends_only_the_newest_messages(monkeypatch):
     assert "user 26" not in request and "narrator 26" not in request
 
 
-async def test_draft_from_prompt(monkeypatch):
-    fake = FakeComplete(json.dumps({"changes": [{"name": f"E{i}", "keys": [], "text": "t"} for i in range(15)]}))
-    monkeypatch.setattr(zai, "complete", fake)
-
-    drafted = await lore_update.draft_from_prompt("A marsh with a witch called the Mire Hag.", "glm-4.7-flash")
-
-    assert len(drafted) == lore_update.MAX_DRAFT_ENTRIES == 12
-    assert drafted[0] == {"name": "E0", "keys": "", "text": "t"}
-    assert "Mire Hag" in fake.requests[0][-1]["content"]
-
-
 async def test_nothing_to_update_without_a_reply():
     with session_scope() as s:
         conv = Conversation(model="glm-4.7-flash", system_prompt="")
@@ -229,3 +212,42 @@ async def test_nothing_to_update_without_a_reply():
         leaf = user.id
 
     assert await lore_update.update_lore(leaf) is None
+
+
+# ---------------------------------------------------------------- moving details out of a system prompt
+
+
+async def test_move_details_splits_the_prompt(monkeypatch):
+    fake = FakeComplete("```json\n" + json.dumps({
+        "system_prompt": "You narrate a marsh.\nKeep it grim.",
+        "entries": [{"name": "Mire Hag", "keys": ["hag", "witch"], "text": "A swamp witch."},
+                    {"name": "", "text": "no name"}],
+    }) + "\n```")
+    monkeypatch.setattr(zai, "complete", fake)
+
+    prompt, entries = await lore_update.move_details("You narrate a marsh. The Mire Hag is a swamp witch.",
+                                                     "glm-4.7-flash")
+
+    assert prompt == "You narrate a marsh.\nKeep it grim."  # line breaks kept
+    assert entries == [{"name": "Mire Hag", "keys": "hag, witch", "text": "A swamp witch."}]
+    assert "The Mire Hag is a swamp witch." in fake.requests[0][-1]["content"]
+
+
+async def test_move_details_caps_the_entries(monkeypatch):
+    many = {"system_prompt": "Short.", "entries": [{"name": f"E{i}", "text": "t"} for i in range(50)]}
+    monkeypatch.setattr(zai, "complete", FakeComplete(json.dumps(many)))
+    prompt, entries = await lore_update.move_details("Long.", "glm-4.7-flash")
+    assert len(entries) == lore_update.MAX_MOVE_ENTRIES == 30
+
+
+@pytest.mark.parametrize("answer", [
+    "Sure, here's a cleaner prompt!",
+    '{"system_prompt": "x", "entries": [',  # cut off
+    '{"system_prompt": "", "entries": []}',  # would wipe the prompt
+    '{"system_prompt": 5, "entries": []}',
+    '{"system_prompt": "x", "entries": "none"}',
+])
+async def test_move_details_unreadable_answer_is_an_error(monkeypatch, answer):
+    monkeypatch.setattr(zai, "complete", FakeComplete(answer))
+    with pytest.raises(zai.ZaiError, match="Couldn't read the model's answer"):
+        await lore_update.move_details("A marsh.", "glm-4.7-flash")
