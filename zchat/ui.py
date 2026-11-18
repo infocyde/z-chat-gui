@@ -223,6 +223,14 @@ def usage_line(m: Message):
                       f"completion {m.completion_tokens:,} (reasoning {m.reasoning_tokens:,})")
 
 
+def lore_used_line(m: Message):
+    """"Lore: Mire Hag, Gloomfang" under a reply: the lorebook entries that were sent with it."""
+    if not m.lore_used:
+        return None
+    return Span("Lore: " + ", ".join(m.lore_used.splitlines()), cls="usage lore-used",
+                title="Lorebook entries sent with this reply")
+
+
 def action_btn(name: str, title: str, **kw):
     return Button(icon(name, 15), cls="icon-btn", title=title, **kw)
 
@@ -270,7 +278,7 @@ def message_view(m: Message, branch: Branch | None = None):
 
     return Div(
         Div(*body, cls="bubble"),
-        Div(branch_nav(branch), usage_line(m), Div(*actions, cls="actions"), cls="msg-meta"),
+        Div(branch_nav(branch), usage_line(m), lore_used_line(m), Div(*actions, cls="actions"), cls="msg-meta"),
         id=f"msg-{m.id}",
         cls=f"msg msg-{m.role} status-{m.status}",
         data_stream_url=f"/stream?mid={m.id}" if m.status == "pending" else None,

@@ -194,7 +194,15 @@ def latest_summary(path: list[Message]) -> Message | None:
     return None
 
 
-def build_messages(conv: Conversation, path: list[Message], model_id: str) -> list[dict]:
+def with_lore(content: str | list[dict], notes: str) -> str | list[dict]:
+    """Put the lore note in front of a user message's text (its text part, for a message with images)."""
+    if isinstance(content, str):
+        return f"{notes}\n\n{content}" if content else notes
+    return [{"type": "text", "text": f"{notes}\n\n{part['text']}"} if part["type"] == "text" else part
+            for part in content]
+
+
+def build_messages(conv: Conversation, path: list[Message], model_id: str, world_notes: str = "") -> list[dict]:
     """Chat-completions `messages` for the given branch (excluding the pending reply itself).
 
     The prefix is deterministic for a given branch, so Z.ai's automatic context cache can hit.
@@ -203,6 +211,10 @@ def build_messages(conv: Conversation, path: list[Message], model_id: str) -> li
 
     If the branch has a "Story so far" summary, it goes after the system prompt and only the
     messages after it are sent.
+
+    `world_notes` (from lore.lore_block) goes in front of the newest user message only. It isn't saved
+    with the message, so next turn that message is sent without it and the history never fills up
+    with lore. Putting it in the system prompt instead would break the cache whenever it changed.
     """
     vision = config.model_info(model_id).vision
     system = conv.system_prompt.strip()
@@ -216,7 +228,10 @@ def build_messages(conv: Conversation, path: list[Message], model_id: str) -> li
     last_user_idx = max((i for i, m in enumerate(path) if m.role == "user"), default=-1)
     for i, m in enumerate(path):
         if m.role == "user":
-            out.append({"role": "user", "content": user_content(m, vision=vision and i == last_user_idx)})
+            content = user_content(m, vision=vision and i == last_user_idx)
+            if world_notes and i == last_user_idx:
+                content = with_lore(content, world_notes)
+            out.append({"role": "user", "content": content})
         else:
             c = assistant_content(m)
             if c:

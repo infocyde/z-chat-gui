@@ -15,7 +15,7 @@ from fasthtml.common import (Div, FileResponse, Link, Meta, P, Redirect, Respons
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from zchat import category, chat, config, documents, generate, pricing, scenario_json, story, ui, zai
+from zchat import category, chat, config, documents, generate, lore, pricing, scenario_json, story, ui, zai
 from zchat.db import session_scope, upgrade_db
 from zchat.models import Attachment, Conversation, Message, Scenario, utcnow
 
@@ -219,6 +219,9 @@ async def new_chat(req):
                             reasoning_effort=form.get("reasoning_effort") or config.DEFAULT_EFFORT)
         s.add(conv)
         s.flush()
+        scenario = s.get(Scenario, conv.scenario_id) if conv.scenario_id else None
+        if scenario:
+            lore.seed_chat(s, conv, scenario)  # the chat gets its own copy of the scenario's lorebook
         user, _reply = chat.send_user_message(s, conv, content, image_mode=image_mode)
         for p in files:
             chat.add_attachment(s, user, p)

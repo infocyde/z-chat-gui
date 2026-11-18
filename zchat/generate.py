@@ -15,7 +15,7 @@ from pathlib import PurePosixPath
 from typing import AsyncIterator
 from urllib.parse import urlparse
 
-from . import config, documents, story, zai
+from . import config, documents, lore, story, zai
 from .chat import build_messages, effective_model, path_to, touch
 from .db import session_scope
 from .models import Attachment, Conversation, Message
@@ -73,7 +73,9 @@ async def run(mid: int) -> AsyncIterator[Event]:
         path = path_to(s, parent_id)
         model = effective_model(conv, path)
         m.model = model
-        msgs = build_messages(conv, path, model)
+        found = lore.find_for_reply(s, conv, path)
+        m.lore_used = "\n".join(v.name for v in found)
+        msgs = build_messages(conv, path, model, world_notes=lore.lore_block(found))
         thinking, effort, temperature = conv.thinking, conv.reasoning_effort, conv.temperature
 
     async for ev in _run_text(mid, msgs, model, thinking, effort, temperature):

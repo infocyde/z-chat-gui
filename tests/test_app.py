@@ -376,3 +376,35 @@ def test_summarize_button_edit_and_remove(client, monkeypatch):
     assert 'id="summary-' not in r.text
     with session_scope() as s:
         assert s.get(Message, first_reply).summary == ""
+
+
+def test_reply_sends_and_shows_the_lore_it_used(client, monkeypatch):
+    from zchat.db import session_scope
+    from zchat.models import Scenario, ScenarioLore
+
+    sent = []
+
+    async def fake_stream(messages, model, thinking=False, temperature=None, effort="low"):
+        sent.append(messages)
+        yield zai.StreamEvent("content", "A lantern glows in the reeds.")
+        yield zai.StreamEvent("usage", data={"prompt_tokens": 50, "completion_tokens": 8})
+
+    monkeypatch.setattr(zai, "stream_chat", fake_stream)
+    with session_scope() as s:
+        sc = Scenario(name="Lore Marsh", system_prompt="A marsh.")
+        sc.lore = [ScenarioLore(name="Mire Hag", keys="hag", text="Swamp witch."),
+                   ScenarioLore(name="Gloomfang", keys="wolf", text="Cave wolf.")]
+        s.add(sc)
+        s.flush()
+        sid = sc.id
+
+    r = client.post("/new", data={"content": "I look for the hag.", "model": "glm-4.7-flash", "scenario_id": sid,
+                                  "system_prompt": "A marsh."}, headers={"HX-Request": "true"})
+    cid = re.search(r"/c/(\d+)", r.headers["HX-Redirect"]).group(1)
+    mid = re.search(r'data-stream-url="/stream\?mid=(\d+)"', client.get(f"/c/{cid}").text).group(1)
+    client.get(f"/stream?mid={mid}")
+
+    last = sent[-1][-1]["content"]
+    assert "### Mire Hag\nSwamp witch." in last and "Gloomfang" not in last
+    assert last.endswith("I look for the hag.")
+    assert "Lore: Mire Hag" in client.get(f"/c/{cid}").text

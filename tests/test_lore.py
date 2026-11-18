@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import func, select, text
 
 from zchat import chat, config, lore
-from zchat.models import Conversation, LoreEntry, LoreVersion, Scenario, ScenarioLore
+from zchat.models import Conversation, LoreEntry, LoreVersion, Message, Scenario, ScenarioLore
 
 
 def new_conv(s) -> Conversation:
@@ -228,3 +228,35 @@ def test_lore_block_wording():
     assert "### Mire Hag\nSwamp witch.\n\n### Gloomfang\nCave wolf." in block
     assert block.endswith("</world_notes>")
     assert lore.lore_block([]) == ""
+
+
+# ---------------------------------------------------------------- what gets sent
+
+
+def test_lore_goes_only_on_the_newest_user_turn(s):
+    conv, path = story_with_lore(s)
+    path = path[:-1]  # drop the last reply: "user 3" is the newest turn
+
+    msgs = chat.build_messages(conv, path, conv.model, world_notes="<world_notes>X</world_notes>")
+
+    assert msgs[-1] == {"role": "user", "content": "<world_notes>X</world_notes>\n\nuser 3"}
+    assert all("world_notes" not in m["content"] for m in msgs[:-1])  # system prompt + history untouched
+
+
+def test_lore_goes_in_the_text_part_of_an_image_message():
+    from zchat.models import Attachment
+    conv = Conversation(model="glm-4.6v", system_prompt="")
+    user = Message(id=1, role="user", content="What is this?", kind="text")
+    user.attachments = [Attachment(kind="image", filename="x.png", path="does-not-exist.png", mime="image/png")]
+    msgs = chat.build_messages(conv, [user], "glm-4.6v", world_notes="<world_notes>X</world_notes>")
+    assert msgs[-1]["content"][-1] == {"type": "text", "text": "<world_notes>X</world_notes>\n\nWhat is this?"}
+
+
+def test_previous_turns_stay_identical_for_the_cache(s):
+    conv, path = story_with_lore(s)
+    turn_n = chat.build_messages(conv, path[:-1], conv.model, world_notes="<world_notes>A</world_notes>")
+    user, reply = chat.send_user_message(s, conv, "user 4")
+    turn_n_plus_1 = chat.build_messages(conv, chat.active_path(s, conv)[:-1], conv.model,
+                                        world_notes="<world_notes>B</world_notes>")
+    # Everything before turn N's user message is sent exactly as before, so the cache still hits.
+    assert turn_n_plus_1[:len(turn_n) - 1] == turn_n[:-1]
