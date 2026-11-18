@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from zchat import category, chat, config, documents, generate, lore, pricing, scenario_json, story, ui, zai
 from zchat.db import session_scope, upgrade_db
-from zchat.models import Attachment, Conversation, Message, Scenario, utcnow
+from zchat.models import Attachment, Conversation, Message, Scenario, ScenarioLore, utcnow
 
 upgrade_db()  # apply any pending Alembic migrations (creates data/zchat.db on first run)
 
@@ -597,7 +597,10 @@ async def scenario_import(req):
             for item in items:
                 item["name"] = scenario_json.unique_name(item["name"], taken)
                 taken.add(item["name"])
-                s.add(Scenario(**item))
+                lorebook = item.pop("lorebook")
+                sc = Scenario(**item)
+                sc.lore = [ScenarioLore(**entry) for entry in lorebook]
+                s.add(sc)
                 imported.append(item["name"])
         s.flush()
         page = ui.scenarios_page(all_scenarios(s))

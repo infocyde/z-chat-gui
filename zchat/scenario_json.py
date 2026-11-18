@@ -29,8 +29,12 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def to_dict(s: Scenario) -> dict:
-    return {"name": s.name, "description": s.description, "categories": category.split(s.categories),
+    data = {"name": s.name, "description": s.description, "categories": category.split(s.categories),
             "system_prompt": s.system_prompt}
+    if s.lore:
+        from .lore_import import to_export  # imported here: lore_import imports this module
+        data["lorebook"] = to_export(s.name, s.lore)["entries"]
+    return data
 
 
 def dumps(data) -> str:
@@ -71,18 +75,23 @@ def _categories(value) -> str:
     return category.clean(clean(value, one_line=True), known=category.COMMON)
 
 
-def parse(raw: bytes) -> list[dict]:
-    """Read an uploaded file into a list of {name, description, categories, system_prompt}. Raises ValueError if it's wrong."""
+def load_json(raw: bytes):
+    """Uploaded bytes -> parsed JSON, whatever editor saved the file. Raises ValueError if it's wrong."""
     if len(raw) > MAX_FILE_BYTES:
         raise ValueError(f"file is too big (limit {MAX_FILE_BYTES // 1_000_000} MB)")
     try:
         # strict=False: allow raw tabs/newlines inside strings (common in hand-edited files); clean() tidies them
-        data = json.loads(_decode(raw), strict=False)
+        return json.loads(_decode(raw), strict=False)
     except json.JSONDecodeError as e:
         raise ValueError(f"not valid JSON ({e.msg}, line {e.lineno})")
     except RecursionError:
         raise ValueError("not a scenario file (nested too deeply)")
 
+
+def parse(raw: bytes) -> list[dict]:
+    """Read an uploaded file into a list of {name, description, categories, system_prompt, lorebook}.
+    Raises ValueError if it's wrong."""
+    data = load_json(raw)
     if isinstance(data, dict):
         data = [data]
     if not isinstance(data, list):
@@ -98,8 +107,20 @@ def parse(raw: bytes) -> list[dict]:
             "description": clean(item.get("description"), 500, one_line=True),
             "categories": _categories(item.get("categories")),
             "system_prompt": clean(item.get("system_prompt")),
+            "lorebook": _lorebook(item.get("lorebook"), number),
         })
     return scenarios
+
+
+def _lorebook(value, number: int) -> list[dict]:
+    """A scenario's "lorebook" (a list of entries, or a whole lorebook file) -> [{name, keys, text, enabled}]."""
+    if value is None:
+        return []
+    from .lore_import import entries_from  # imported here: lore_import imports this module
+    try:
+        return entries_from(value)
+    except ValueError as e:
+        raise ValueError(f"scenario #{number}: lorebook: {e}")
 
 
 def unique_name(name: str, taken: set[str]) -> str:
