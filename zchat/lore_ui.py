@@ -140,3 +140,25 @@ def chat_lore_drawer(conv_id: int, versions: list):
                                              cls="muted")),
                    chat_lore_list(conv_id, versions),
                    cls="system-drawer lore-drawer")
+
+
+# ---------------------------------------------------------------- lorebook update notes
+
+
+def lore_note_view(m, versions: list):
+    """The note after a reply when the lorebook updated itself. `versions` are the ones it saved."""
+    if m.lore_note == "Undone.":
+        return Div(icon("book", 15), Span("Lorebook update undone."), id=f"lore-note-{m.id}",
+                   cls="lore-note muted small")
+    if m.lore_note == "No changes.":
+        return Div(icon("book", 15), Span("Lorebook checked: no changes."), id=f"lore-note-{m.id}",
+                   cls="lore-note muted small")
+    return Details(
+        Summary(icon("book", 15), Span("Lorebook updated"),
+                Small(" · " + " · ".join(m.lore_note.splitlines()), cls="muted")),
+        Div(*[Div(Strong(v.name), P(v.text, cls="preview")) for v in versions], cls="stack tight"),
+        Div(Button("Undo", type="button", cls="btn btn-ghost", hx_post=f"/lore/undo?mid={m.id}",
+                   hx_target="#messages",
+                   hx_confirm="Undo this lorebook update? The entries it added or changed go back to how they were."),
+            cls="row end"),
+        id=f"lore-note-{m.id}", cls="lore-note")

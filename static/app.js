@@ -53,6 +53,17 @@ function startStream(bubble) {
     }
   });
 
+  // The lorebook just updated itself: show the note after the reply it's tied to, refresh the drawer.
+  source.addEventListener("lore", (e) => {
+    const data = JSON.parse(e.data);
+    const reply = document.getElementById("msg-" + data.mid);
+    if (reply) {
+      reply.insertAdjacentHTML("afterend", data.html);
+      htmx.process(reply.nextElementSibling);  // wire up its Undo button
+    }
+    replaceElement(document.getElementById("chat-lore"), data.drawer);
+  });
+
   // The conversation got a title: refresh the sidebar list and the header.
   source.addEventListener("sidebar", (e) => {
     const data = JSON.parse(e.data);

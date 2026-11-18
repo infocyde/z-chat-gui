@@ -587,3 +587,59 @@ def select_version(cid):
 
     from zchat.models import LoreEntry, LoreVersion
     return select(LoreVersion).join(LoreEntry).where(LoreEntry.conversation_id == cid)
+
+
+def start_chat_with_one_reply(client) -> tuple[str, str]:
+    """A new chat whose first reply has streamed. Returns (chat id, reply id)."""
+    r = client.post("/new", data={"content": "I walk in.", "model": "glm-4.7-flash"}, headers={"HX-Request": "true"})
+    cid = re.search(r"/c/(\d+)", r.headers["HX-Redirect"]).group(1)
+    first = re.search(r'data-stream-url="/stream\?mid=(\d+)"', client.get(f"/c/{cid}").text).group(1)
+    events = client.get(f"/stream?mid={first}").text
+    assert "event: lore" not in events  # no replies before this one: nothing to update yet
+    return cid, first
+
+
+def test_stream_runs_a_due_update_before_the_reply_and_undo_reverts_it(client, monkeypatch):
+    import json
+
+    from zchat import config
+    from zchat.db import session_scope
+    from zchat.models import LoreVersion, Message
+
+    monkeypatch.setattr(config, "LORE_UPDATE_EVERY", 1)
+    cid, first = start_chat_with_one_reply(client)
+
+    async def fake_complete(messages, model=None, max_tokens=0, timeout=0):
+        return json.dumps({"changes": [{"name": "Barkeep", "keys": ["barkeep"], "text": "Grumpy."}]})
+
+    monkeypatch.setattr(zai, "complete", fake_complete)
+    r = client.post(f"/send?cid={cid}", data={"content": "I order a drink."}, headers={"HX-Request": "true"})
+    second = re.search(r'data-stream-url="/stream\?mid=(\d+)"', r.text).group(1)
+    events = client.get(f"/stream?mid={second}").text
+    assert "Updating the lorebook" in events and "event: lore" in events
+    assert events.index("event: lore") < events.index("event: delta")  # before the reply, so it's used
+
+    page = client.get(f"/c/{cid}").text
+    assert f'id="lore-note-{first}"' in page and "Barkeep" in page
+
+    r = client.post(f"/lore/undo?mid={first}", headers={"HX-Request": "true"})
+    assert "undone" in r.text and 'id="chat-lore"' in r.text
+    with session_scope() as s:
+        assert s.query(LoreVersion).filter(LoreVersion.message_id == int(first)).count() == 0
+        assert s.get(Message, int(first)).lore_note == "Undone."
+
+
+def test_failed_update_does_not_stop_the_reply(client, monkeypatch):
+    from zchat import config
+
+    monkeypatch.setattr(config, "LORE_UPDATE_EVERY", 1)
+    cid, first = start_chat_with_one_reply(client)
+
+    async def failing_complete(messages, model=None, max_tokens=0, timeout=0):
+        raise zai.ZaiError("rate limited")
+
+    monkeypatch.setattr(zai, "complete", failing_complete)
+    r = client.post(f"/send?cid={cid}", data={"content": "Again."}, headers={"HX-Request": "true"})
+    second = re.search(r'data-stream-url="/stream\?mid=(\d+)"', r.text).group(1)
+    events = client.get(f"/stream?mid={second}").text
+    assert "update the lorebook (rate limited)" in events and "event: finished" in events

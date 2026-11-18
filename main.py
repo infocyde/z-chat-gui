@@ -15,8 +15,8 @@ from fasthtml.common import (Div, FileResponse, Link, Meta, P, Redirect, Respons
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from zchat import (category, chat, config, documents, embeddings, generate, lore, lore_import, lore_ui, pricing,
-                   scenario_json, story, ui, zai)
+from zchat import (category, chat, config, documents, embeddings, generate, lore, lore_import, lore_ui,
+                   lore_update, pricing, scenario_json, story, ui, zai)
 from zchat.db import session_scope, upgrade_db
 from zchat.models import (Attachment, Conversation, LoreEntry, LoreVersion, Message, Scenario,
                           ScenarioLore, utcnow)
@@ -127,13 +127,22 @@ def render_message(s: Session, m: Message):
     return ui.message_view(m, branch_info(s, m))
 
 
+def render_lore_note(s: Session, m: Message):
+    """The "Lorebook updated" note after a reply, with the versions that update saved."""
+    versions = s.scalars(select(LoreVersion).where(LoreVersion.message_id == m.id).order_by(LoreVersion.id))
+    return lore_ui.lore_note_view(m, list(versions))
+
+
 def render_messages(s: Session, conv: Conversation) -> list:
-    """The active branch, with the "Story so far" box right after the message it summarizes up to."""
+    """The active branch, with the "Story so far" box right after the message it summarizes up to,
+    and a note after each reply where the lorebook updated itself."""
     path = chat.active_path(s, conv)
     checkpoint = chat.latest_summary(path)
     out = []
     for m in path:
         out.append(render_message(s, m))
+        if m.lore_note:
+            out.append(render_lore_note(s, m))
         if m is checkpoint:
             out.append(ui.summary_view(m))
     return out
@@ -290,6 +299,11 @@ async def stream(mid: int):
                 with session_scope() as s:
                     html = to_xml(ui.summary_view(s.get(Message, data["mid"])))
                 yield sse("summary", {"mid": data["mid"], "html": html})
+            elif name == "lore":
+                with session_scope() as s:
+                    noted = s.get(Message, data["mid"])
+                    yield sse("lore", {"mid": data["mid"], "html": to_xml(render_lore_note(s, noted)),
+                                       "drawer": to_xml(render_chat_lore(s, noted.conversation))})
             elif name == "title":
                 with session_scope() as s:
                     conv = s.get(Message, mid).conversation
@@ -766,6 +780,15 @@ def chat_lore_delete(vid: int):
         s.delete(version.entry)
         s.flush()
         return render_chat_lore(s, conv)
+
+
+@app.post("/lore/undo")
+def lore_undo(mid: int):
+    """Undo the lorebook update noted on reply `mid`."""
+    with session_scope() as s:
+        m = s.get(Message, mid)
+        lore_update.undo_update(s, m)
+        return render_messages(s, m.conversation), render_chat_lore(s, m.conversation, oob=True)
 
 
 # ---------------------------------------------------------------- files

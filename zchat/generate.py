@@ -3,7 +3,8 @@
 Kept separate from the web layer so it can be tested without HTTP. Each event is
 (name, payload): "delta"/"reasoning" carry text, "status" a progress line, "title" means the
 conversation got a title, "summary" means older messages were just summarized into a "Story so far"
-note (payload: the message it was saved on), and the stream always ends with "done" or "error".
+note (payload: the message it was saved on), "lore" means the lorebook just updated itself (payload:
+the reply the update is noted on), and the stream always ends with "done" or "error".
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from pathlib import PurePosixPath
 from typing import AsyncIterator
 from urllib.parse import urlparse
 
-from . import config, documents, lore, story, zai
+from . import config, documents, lore, lore_update, story, zai
 from .chat import build_messages, effective_model, path_to, touch
 from .db import session_scope
 from .models import Attachment, Conversation, Message
@@ -51,6 +52,7 @@ async def run(mid: int) -> AsyncIterator[Event]:
         parent_id = m.parent_id
         path = path_to(s, parent_id)
         summarize_first = kind != "image" and story.summary_due(path, effective_model(m.conversation, path))
+        update_lore_first = kind != "image" and lore_update.update_due(path)
 
     if kind == "image":
         async for ev in _run_image(mid):
@@ -66,6 +68,17 @@ async def run(mid: int) -> AsyncIterator[Event]:
             yield "status", {"t": f"Couldn't summarize ({e}). Sending the full story."}
         if summary_on:
             yield "summary", {"mid": summary_on}
+
+    # Before the lorebook is searched, so this reply already uses what just changed.
+    if update_lore_first:
+        yield "status", {"t": "Updating the lorebook…"}
+        try:
+            note_on = await lore_update.update_lore(parent_id)
+        except Exception as e:  # carry on with the lorebook as it is; it's tried again next reply
+            note_on = None
+            yield "status", {"t": f"Couldn't update the lorebook ({e}). Carrying on."}
+        if note_on:
+            yield "lore", {"mid": note_on}
 
     with session_scope() as s:
         m = s.get(Message, mid)
