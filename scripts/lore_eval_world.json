@@ -1,0 +1,41 @@
+{
+  "entries": [
+    {"name": "Mire Hag", "keys": "hag, witch", "text": "A swamp witch who lures travelers with lantern light, then drags them under the black water. She bargains, but always takes more than she gives."},
+    {"name": "Gloomfang", "keys": "wolf", "text": "A cave wolf the size of a pony, grey as ash, with one milky eye. Hunts in the hills above the village at dusk."},
+    {"name": "Ash Wyrm", "keys": "wyrm, dragon", "text": "An old dragon asleep under the burnt mountain. Its breath is smoke and cinders; the slopes are warm to the touch."},
+    {"name": "Brother Aldric", "keys": "aldric, priest", "text": "The village priest. Kind, tired, and secretly paying the Mire Hag in silver so she spares the village children."},
+    {"name": "Sela Venn", "keys": "sela, smith", "text": "The blacksmith. Broad-shouldered, quick to laugh, forges the only steel in the valley. Lost her brother to the wolf."},
+    {"name": "The Drowned Bell", "keys": "bell", "text": "A bronze bell sunk in the marsh. When it rings underwater, someone in the village dies before morning."},
+    {"name": "Hollowmere", "keys": "village, hollowmere", "text": "A small village of thatched houses between the hills and the marsh. One inn, one chapel, one forge."},
+    {"name": "The Salt Road", "keys": "road", "text": "The old trade road out of the valley, lined with mile-stones carved with warding runes. Merchants avoid it after dark."},
+    {"name": "Ironwood Staff", "keys": "staff", "text": "A walking staff of black wood that never burns. Whoever carries it cannot be lied to."},
+    {"name": "The Crooked Inn", "keys": "inn, tavern", "text": "Hollowmere's only inn, run by a nervous widower. The ale is thin, the beds are clean, and the cellar door is always locked."},
+    {"name": "Grave Lanterns", "keys": "lanterns", "text": "Little blue lights that drift over the graveyard. Following them leads to the dead, not the living."},
+    {"name": "Captain Roderick Vale", "keys": "vale, captain", "text": "Leader of the valley's small militia. Gruff, honest, badly outnumbered, and drinking too much since the wyrm stirred."},
+    {"name": "The Black Fen", "keys": "fen", "text": "The deepest part of the marsh, where the water is black and still and the reeds grow taller than a man."},
+    {"name": "Moonpetal", "keys": "herb, flower", "text": "A pale flower that only opens at night. Brewed into tea, it cures fever; eaten raw, it brings visions."},
+    {"name": "The Ember Cult", "keys": "cult, cultists", "text": "Robed worshippers of the Ash Wyrm who want to wake it. They mark their doors with a burnt handprint."}
+  ],
+  "scenes": [
+    {"scene": "I ask the witch what she wants in return.", "expected": "Mire Hag"},
+    {"scene": "Something with long fingers rises out of the bog and smiles at me.", "expected": "Mire Hag"},
+    {"scene": "A huge grey beast with one pale eye watches us from the ridge.", "expected": "Gloomfang"},
+    {"scene": "We hear howling from the hills as the sun goes down.", "expected": "Gloomfang"},
+    {"scene": "The ground on the mountain is warm and smoke leaks from the cracks.", "expected": "Ash Wyrm"},
+    {"scene": "I tell the captain the dragon is waking.", "expected": "Ash Wyrm"},
+    {"scene": "I confront the priest about the silver missing from the chapel.", "expected": "Brother Aldric"},
+    {"scene": "I need a sword forged before the attack.", "expected": "Sela Venn"},
+    {"scene": "I ask Sela if she can fix my armor.", "expected": "Sela Venn"},
+    {"scene": "Far out in the marsh, something bronze tolls beneath the water.", "expected": "The Drowned Bell"},
+    {"scene": "We reach the village at last: a handful of thatched roofs and a chapel.", "expected": "Hollowmere"},
+    {"scene": "We take the old trade route out of the valley before nightfall.", "expected": "The Salt Road"},
+    {"scene": "I lean on the black walking stick and ask him to tell me the truth.", "expected": "Ironwood Staff"},
+    {"scene": "I want a room and a drink for the night.", "expected": "The Crooked Inn"},
+    {"scene": "Why is the cellar door locked?", "expected": "The Crooked Inn"},
+    {"scene": "Small blue lights float above the tombstones and drift away.", "expected": "Grave Lanterns"},
+    {"scene": "The militia leader is drunk again.", "expected": "Captain Roderick Vale"},
+    {"scene": "We wade into the deepest, darkest part of the swamp where the reeds tower over us.", "expected": "The Black Fen"},
+    {"scene": "The child has a terrible fever. Is there any remedy?", "expected": "Moonpetal"},
+    {"scene": "Someone has pressed a burnt handprint onto the door of the inn.", "expected": "The Ember Cult"}
+  ]
+}

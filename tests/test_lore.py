@@ -79,7 +79,7 @@ def test_deleting_a_scenario_deletes_its_lorebook(s):
 
 def test_lorebook_settings_have_defaults():
     assert (config.LORE_SCAN_MESSAGES, config.LORE_MAX_ENTRIES, config.LORE_MAX_TOKENS) == (4, 4, 800)
-    assert config.LORE_VECTORS is True and config.LORE_MIN_SIMILARITY == 0.6
+    assert config.LORE_VECTORS is True and config.LORE_MIN_SIMILARITY == 0.5
     assert config.LORE_UPDATE_EVERY == 10
 
 

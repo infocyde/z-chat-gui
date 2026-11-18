@@ -52,7 +52,7 @@ LORE_SCAN_MESSAGES = max(1, int(_lore.get("scan_messages", 4)))  # recent messag
 LORE_MAX_ENTRIES = max(0, int(_lore.get("max_entries", 4)))  # entries sent with one reply, at most
 LORE_MAX_TOKENS = max(0, int(_lore.get("max_tokens", 800)))  # and roughly this many tokens of them
 LORE_VECTORS = bool(_lore.get("vectors", True))  # also search by meaning (local embedding model)
-LORE_MIN_SIMILARITY = float(_lore.get("min_similarity", 0.6))  # 0..1, for the meaning search
+LORE_MIN_SIMILARITY = float(_lore.get("min_similarity", 0.5))  # 0..1; see scripts/lore_eval.py
 LORE_UPDATE_EVERY = max(0, int(_lore.get("update_every_replies", 10)))  # 0 = never update by itself
 
 DATA_DIR = Path(os.environ.get("ZCHAT_DATA_DIR", ROOT / "data"))

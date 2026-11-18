@@ -31,7 +31,8 @@ lorebook:
   # Also search by meaning ("something rises from the bog" finds the swamp witch), with a small
   # local model that is downloaded once (~70 MB). false = word matching only.
   vectors: true
-  # How close in meaning an entry must be to count (0 to 1). Higher = stricter.
-  min_similarity: 0.6
+  # How close in meaning an entry must be to count (0 to 1). Higher = stricter. 0.5 measured best
+  # (scripts/lore_eval.py): lower drags in unrelated entries, 0.6 and up finds nothing words don't.
+  min_similarity: 0.5
   # Every this many replies, the model updates the chat's lorebook with what happened. 0 = never.
   update_every_replies: 10
