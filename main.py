@@ -725,6 +725,36 @@ async def scenario_lore_import(req, sid: int):
         return lore_ui.scenario_lore_list(sc), notice, error_toast(errors)
 
 
+@app.post("/lore/scenario/draft")
+async def scenario_lore_draft(sid: int):
+    """"Draft from prompt": the AI writes starter entries from the system prompt. Names already there are skipped."""
+    with session_scope() as s:
+        system_prompt = get_scenario(s, sid).system_prompt.strip()
+    if not system_prompt:
+        with session_scope() as s:
+            return lore_ui.scenario_lore_list(get_scenario(s, sid)), error_toast(
+                ["Write a system prompt first: the draft is made from it."])
+    try:
+        drafted = await lore_update.draft_from_prompt(system_prompt, config.DEFAULT_MODEL)
+    except Exception as e:
+        with session_scope() as s:
+            return lore_ui.scenario_lore_list(get_scenario(s, sid)), error_toast([f"Couldn't draft a lorebook: {e}"])
+    with session_scope() as s:
+        sc = get_scenario(s, sid)
+        taken = {e.name.lower() for e in sc.lore}
+        added = 0
+        for entry in drafted:
+            if entry["name"].lower() in taken:
+                continue
+            sc.lore.append(ScenarioLore(name=entry["name"], keys=entry["keys"], text=entry["text"]))
+            taken.add(entry["name"].lower())
+            added += 1
+        s.flush()
+        notice = info_toast([f"Drafted {lore_ui.entry_count(added)} from the system prompt. "
+                             "Edit or delete any you don't want."])
+        return lore_ui.scenario_lore_list(sc), notice
+
+
 @app.get("/lore/scenario/export")
 def scenario_lore_export(sid: int):
     with session_scope() as s:

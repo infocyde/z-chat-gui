@@ -183,6 +183,17 @@ async def test_unreadable_answer_counts_as_no_changes(monkeypatch):
         assert s.get(Message, leaf).lore_note == "No changes."
 
 
+async def test_draft_from_prompt(monkeypatch):
+    fake = FakeComplete(json.dumps({"changes": [{"name": f"E{i}", "keys": [], "text": "t"} for i in range(15)]}))
+    monkeypatch.setattr(zai, "complete", fake)
+
+    drafted = await lore_update.draft_from_prompt("A marsh with a witch called the Mire Hag.", "glm-4.7-flash")
+
+    assert len(drafted) == lore_update.MAX_DRAFT_ENTRIES == 12
+    assert drafted[0] == {"name": "E0", "keys": "", "text": "t"}
+    assert "Mire Hag" in fake.requests[0][-1]["content"]
+
+
 async def test_nothing_to_update_without_a_reply():
     with session_scope() as s:
         conv = Conversation(model="glm-4.7-flash", system_prompt="")

@@ -643,3 +643,38 @@ def test_failed_update_does_not_stop_the_reply(client, monkeypatch):
     second = re.search(r'data-stream-url="/stream\?mid=(\d+)"', r.text).group(1)
     events = client.get(f"/stream?mid={second}").text
     assert "update the lorebook (rate limited)" in events and "event: finished" in events
+
+
+def test_draft_button_adds_entries_and_skips_existing_names(client, monkeypatch):
+    import json
+
+    async def fake_complete(messages, model=None, max_tokens=0, timeout=0):
+        return json.dumps({"changes": [{"name": "mire hag", "keys": ["hag"], "text": "Duplicate."},
+                                       {"name": "Gloomfang", "keys": ["wolf"], "text": "Cave wolf."}]})
+
+    monkeypatch.setattr(zai, "complete", fake_complete)
+    client.post("/scenarios/save", data={"name": "Lore Draft", "system_prompt": "A marsh.", "categories": "Fantasy"})
+    sid = scenario_named("Lore Draft").id
+    client.post("/lore/scenario/save", data={"sid": sid, "name": "Mire Hag", "text": "Swamp witch.", "enabled": "1"})
+    assert f'hx-post="/lore/scenario/draft?sid={sid}"' in client.get(f"/scenarios/edit?sid={sid}").text
+
+    r = client.post(f"/lore/scenario/draft?sid={sid}", headers={"HX-Request": "true"})
+
+    assert "Drafted 1 entry from the system prompt" in r.text and "Gloomfang" in r.text
+    assert lore_names(sid) == ["Mire Hag", "Gloomfang"]
+
+
+def test_draft_needs_a_system_prompt_and_reports_failures(client, monkeypatch):
+    client.post("/scenarios/save", data={"name": "Lore Draft Empty", "categories": "Fantasy"})
+    sid = scenario_named("Lore Draft Empty").id
+    r = client.post(f"/lore/scenario/draft?sid={sid}", headers={"HX-Request": "true"})
+    assert "Write a system prompt first" in r.text
+
+    async def failing_complete(messages, model=None, max_tokens=0, timeout=0):
+        raise zai.ZaiError("rate limited")
+
+    monkeypatch.setattr(zai, "complete", failing_complete)
+    client.post("/scenarios/save", data={"sid": sid, "name": "Lore Draft Empty", "system_prompt": "A marsh.",
+                                         "categories": "Fantasy"})
+    r = client.post(f"/lore/scenario/draft?sid={sid}", headers={"HX-Request": "true"})
+    assert "Couldn't draft a lorebook: rate limited" in r.text and lore_names(sid) == []

@@ -447,3 +447,4 @@ div.lore-note { display: flex; align-items: center; gap: 8px; border: none; padd
 .lore-note > summary { cursor: pointer; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--text-muted); font-weight: 600; }
 .lore-note[open] > summary { margin-bottom: 8px; }
 .lore-note .preview { margin: 2px 0 0; color: var(--text-muted); white-space: pre-wrap; }
+.row.wrap { flex-wrap: wrap; justify-content: flex-end; }

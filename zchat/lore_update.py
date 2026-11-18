@@ -182,6 +182,15 @@ async def update_lore(leaf_id: int | None) -> int | None:
     return note_on
 
 
+async def draft_from_prompt(system_prompt: str, model: str) -> list[dict]:
+    """Starter lorebook entries pulled out of a scenario's system prompt: [{name, keys, text}].
+    Raises (zai.ZaiError, network errors) if the model call fails."""
+    answer = await zai.complete([{"role": "system", "content": DRAFT_SYSTEM},
+                                 {"role": "user", "content": f"<setting>\n{system_prompt[:12000]}\n</setting>"}],
+                                model=model, max_tokens=4000, timeout=300)
+    return parse_changes(answer, limit=MAX_DRAFT_ENTRIES)
+
+
 def undo_update(s, m: Message) -> None:
     """Remove what the update after `m` changed. Entries it added (with no other versions) go too."""
     entry_ids = {v.entry_id for v in s.query(LoreVersion).filter(LoreVersion.message_id == m.id)}

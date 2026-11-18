@@ -96,9 +96,14 @@ def scenario_lore_section(scenario):
             Div(import_btn,
                 A(icon("download", 15), "Export", href=f"/lore/scenario/export?sid={scenario.id}",
                   cls="btn btn-ghost"),
+                # Drafting takes a few seconds; stop double-clicks meanwhile.
+                Button(icon("wand", 15), "Draft from prompt", type="button", cls="btn btn-ghost",
+                       title="Let the AI pull characters, places and items out of the system prompt",
+                       hx_post=f"/lore/scenario/draft?sid={scenario.id}", hx_target="#scenario-lore",
+                       hx_swap="outerHTML", hx_disabled_elt="this"),
                 Button(icon("plus", 15), "Add entry", type="button", cls="btn btn-primary",
                        hx_get=f"/lore/scenario/form?sid={scenario.id}", hx_target="#scenario-lore-new"),
-                cls="row gap"),
+                cls="row gap wrap"),
             cls="row between"),
         P("Copied into each new chat started from this scenario. Before every reply, only the entries "
           "that match what's happening are sent.", cls="muted small"),
