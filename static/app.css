@@ -316,7 +316,17 @@ label.btn { flex-direction: row; font-size: 0.9rem; color: var(--text); }  /* a 
 
 /* ---------------------------------------------------------------- composer */
 
-.composer { max-width: var(--content-w); width: 100%; margin: 0 auto; padding: 8px var(--gutter) 18px; }
+.composer { max-width: var(--content-w); width: 100%; margin: 0 auto; padding: 8px var(--gutter) 18px; position: relative; }
+
+/* Long chats: "Show earlier messages" above the newest ones, and up / down arrows above the message box. */
+.older-btn { align-self: center; font-size: 0.85rem; }
+.jump-btns {
+  position: absolute; bottom: 100%; right: calc(var(--gutter) + 8px); z-index: 2;
+  display: flex; gap: 6px; padding-bottom: 6px;
+  opacity: 0; pointer-events: none; transition: opacity 0.15s;
+}
+.jump-btns.show { opacity: 1; pointer-events: auto; }
+.jump-btns .icon-btn { border-radius: 50%; background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow); }
 .composer-box {
   background: var(--surface); border: 1px solid var(--border); border-radius: 18px;
   padding: 10px 10px 8px 14px; box-shadow: var(--shadow); transition: border-color 0.15s, box-shadow 0.15s;

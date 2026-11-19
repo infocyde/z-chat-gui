@@ -5,6 +5,7 @@ A personal web chat client for [Z.ai](https://docs.z.ai) (GLM models), built wit
 - **Chats** stream replies with optional "thinking" shown in a collapsible box.
 - **Branching:** editing one of your messages or regenerating a reply creates a new branch (`‹ 2/3 ›`); nothing is overwritten. **Fork** copies a chat up to any message into a new chat. Assistant replies can be edited in place to steer a story.
 - **Long stories (Story so far):** when a chat's context reaches 100k tokens (or 80% of the model's window, if smaller), the older messages are summarized before the next reply, and from then on the summary is sent instead of them. The newest 10 messages are always sent word for word. The summary shows as a "Story so far" box in the chat, where you can edit or remove it; the **Summarize** button in the header does it on demand. Each new summary builds on the previous one. It's saved on the last message it covers, so branches split off earlier don't see it and forks keep it. Both numbers are in `config.yaml`. Summary calls aren't counted in the token totals.
+- **Long chats load lightly:** a chat opens with only its newest 10 messages, to keep the page fast. Scroll to the top, press **Show earlier messages**, or press the **↑** arrow (above the message box, once you scroll up) to load the rest; **↓** jumps back to the newest message. The next message you send trims the page back to the newest 10. This only changes what the page shows; what's sent to the model is unaffected. To change the number, edit `RECENT_MESSAGES` in **both** `main.py` and `static/app.js` (they must match).
 - **Models:** pick per chat and switch at any time; each reply records which model wrote it.
 - **Scenarios:** reusable system prompts, managed on the Scenarios tab and picked on the new-chat page. You can also type a one-off system prompt.
 - **Lorebooks:** each scenario can have a lorebook: entries for characters, places, monsters and items (a name, keys like `hag, witch`, the text, and on/off). Keep always-true basics in the system prompt; the lorebook is for everything else. Starting a chat copies the scenario's lorebook into the chat, and the chat's copy is its own (the **Lorebook** drawer under the system prompt). Before every reply, the newest messages are searched and only the best matches are sent, in front of your newest message. They aren't saved into the history, so long chats don't fill up with lore, and the cached part of the prompt stays the same. Each reply shows which entries went with it ("Lore: Mire Hag"). Limits are in `config.yaml` under `lorebook:`.
@@ -53,6 +54,12 @@ Set `ZCHAT_ENV_FILE` to read a different file.
 
 App behavior (not secrets) lives in `config.yaml` in the project folder; restart the server after
 editing it. Set `ZCHAT_SETTINGS_FILE` to use a different file.
+
+A few settings are in the code instead:
+
+| Setting | Where | What it does |
+|---|---|---|
+| `RECENT_MESSAGES` (10) | `main.py` **and** `static/app.js` (keep them the same) | How many messages a chat shows when it opens, and after each send |
 
 ## Database & migrations
 

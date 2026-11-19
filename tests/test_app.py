@@ -833,3 +833,46 @@ def test_fork_keeps_the_lorekeeper_setting(s):
     reply.content, reply.status = "hello", "done"
     s.flush()
     assert chat_module.fork(s, conv, reply).lore_on is False
+
+
+def make_long_chat(exchanges: int) -> tuple[int, list[int]]:
+    """A chat with this many finished user/assistant exchanges. Returns its id and the message ids in order."""
+    from zchat import chat
+    from zchat.db import session_scope
+    from zchat.models import Conversation
+
+    with session_scope() as s:
+        conv = Conversation(model="glm-4.7-flash")
+        s.add(conv)
+        s.flush()
+        ids = []
+        for i in range(exchanges):
+            user, reply = chat.send_user_message(s, conv, f"question {i}")
+            reply.content, reply.status = f"answer {i}", "done"
+            ids += [user.id, reply.id]
+        return conv.id, ids
+
+
+def shown_message_ids(html: str) -> list[int]:
+    return [int(mid) for mid in re.findall(r'id="msg-(\d+)"', html)]
+
+
+def test_long_chat_opens_with_only_the_newest_messages(client):
+    import main
+
+    cid, ids = make_long_chat(8)  # 16 messages
+    page = client.get(f"/c/{cid}").text
+    assert shown_message_ids(page) == ids[-main.RECENT_MESSAGES:]
+    assert 'id="older-messages"' in page
+
+    # "Show earlier messages" / the up arrow loads the ones before the first one shown.
+    first_shown = ids[-main.RECENT_MESSAGES]
+    older = client.get(f"/older?before={first_shown}", headers={"HX-Request": "true"}).text
+    assert shown_message_ids(older) == ids[:-main.RECENT_MESSAGES]
+
+
+def test_short_chat_shows_everything(client):
+    cid, ids = make_long_chat(3)  # 6 messages
+    page = client.get(f"/c/{cid}").text
+    assert shown_message_ids(page) == ids
+    assert 'id="older-messages"' not in page

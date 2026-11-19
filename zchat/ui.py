@@ -49,6 +49,8 @@ _ICON_PATHS = {
     "moon": '<path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/>',
     "download": '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
     "upload": '<path d="M12 20V9M7 14l5-5 5 5M5 4h14"/>',
+    "arrow-up": '<path d="M12 19V5M6 11l6-6 6 6"/>',
+    "arrow-down": '<path d="M12 5v14M6 13l6 6 6-6"/>',
 }
 
 
@@ -479,6 +481,23 @@ def system_drawer(conv: Conversation):
         cls="system-drawer")
 
 
+def older_messages_button():
+    """Sits above the newest messages when older ones were left out. app.js builds the same button
+    when it trims the list after you send (see trimToRecent)."""
+    return Button("Show earlier messages", type="button", id="older-messages", cls="btn btn-ghost older-btn",
+                  onclick="showOlderMessages(false)")
+
+
+def jump_buttons():
+    """The up / down arrows above the message box. app.js shows them once you scroll away from the bottom."""
+    return Div(
+        Button(icon("arrow-up", 16), type="button", cls="icon-btn", title="Go to the first message",
+               onclick="jumpToTop()"),
+        Button(icon("arrow-down", 16), type="button", cls="icon-btn", title="Go to the newest message",
+               onclick="jumpToBottom()"),
+        id="jump-btns", cls="jump-btns")
+
+
 def chat_page(conv: Conversation, header, messages: list, lore_drawer=None):
     """`lore_drawer` comes from lore_ui.chat_lore_drawer (built by the route, so ui.py needn't import it)."""
     return Div(
@@ -486,8 +505,8 @@ def chat_page(conv: Conversation, header, messages: list, lore_drawer=None):
         system_drawer(conv),
         lore_drawer,
         Div(Div(*messages, id="messages", cls="messages"), id="scroller", cls="scroller"),
-        Form(composer_bar(illustrate_cid=conv.id), hx_post=f"/send?cid={conv.id}", hx_target="#messages",
-             hx_swap="beforeend", id="composer", cls="composer"),
+        Form(jump_buttons(), composer_bar(illustrate_cid=conv.id), hx_post=f"/send?cid={conv.id}",
+             hx_target="#messages", hx_swap="beforeend", id="composer", cls="composer"),
         cls="chat")
 
 

@@ -133,19 +133,34 @@ def render_lore_note(s: Session, m: Message):
     return lore_ui.lore_note_view(m, list(versions))
 
 
-def render_messages(s: Session, conv: Conversation) -> list:
-    """The active branch, with the "Story so far" box right after the message it summarizes up to,
+# A long chat opens with only its newest messages, which keeps the page fast. The older ones load when you
+# scroll to the top or press the up arrow (see showOlderMessages in app.js, which keeps the same number).
+RECENT_MESSAGES = 10
+
+
+def render_message_list(s: Session, messages: list[Message], checkpoint: Message | None) -> list:
+    """These messages, with the "Story so far" box right after the message it summarizes up to,
     and a note after each reply where the lorebook updated itself."""
-    path = chat.active_path(s, conv)
-    checkpoint = chat.latest_summary(path)
     out = []
-    for m in path:
+    for m in messages:
         out.append(render_message(s, m))
         if m.lore_note:
             out.append(render_lore_note(s, m))
         if m is checkpoint:
             out.append(ui.summary_view(m))
     return out
+
+
+def render_messages(s: Session, conv: Conversation) -> list:
+    """The newest messages on the active branch, with a "Show earlier messages" button above them
+    when older ones are left out."""
+    path = chat.active_path(s, conv)
+    checkpoint = chat.latest_summary(path)
+    recent = path[-RECENT_MESSAGES:]
+    out = []
+    if len(recent) < len(path):
+        out.append(ui.older_messages_button())
+    return out + render_message_list(s, recent, checkpoint)
 
 
 def render_chat_lore(s: Session, conv: Conversation, oob: bool = False):
@@ -335,6 +350,18 @@ def stop(mid: int):
 def message_fragment(mid: int):
     with session_scope() as s:
         return render_message(s, s.get(Message, mid))
+
+
+@app.get("/older")
+def older_messages(before: int):
+    """Every message on the active branch before message `before` (the first one on screen)."""
+    with session_scope() as s:
+        conv = s.get(Message, before).conversation
+        path = chat.active_path(s, conv)
+        ids = [m.id for m in path]
+        if before not in ids:
+            return ""  # the page shows another branch than the one it was drawn from; nothing sensible to add
+        return render_message_list(s, path[:ids.index(before)], chat.latest_summary(path))
 
 
 @app.get("/edit_form")

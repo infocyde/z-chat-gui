@@ -126,6 +126,75 @@ function scrollToBottom(force) {
   if (force || nearBottom) scroller.scrollTop = scroller.scrollHeight;
 }
 
+// ---------------------------------------------------------------- long chats: newest messages only
+
+// A long chat opens with only its newest messages (the server sends RECENT_MESSAGES of them, see main.py).
+// Scrolling to the top or pressing the up arrow loads the rest. The next message you send trims it back.
+const RECENT_MESSAGES = 10;  // keep in step with RECENT_MESSAGES in main.py
+
+let loadingOlder = false;
+
+// Load every message before the first one on screen, in place of the "Show earlier messages" button.
+async function showOlderMessages(goToTop) {
+  const button = document.getElementById("older-messages");
+  const scroller = document.getElementById("scroller");
+  if (button && !loadingOlder) {
+    loadingOlder = true;
+    const firstMessage = document.querySelector("#messages > .msg");
+    const fromBottom = scroller.scrollHeight - scroller.scrollTop;
+    try {
+      await htmx.ajax("GET", `/older?before=${firstMessage.dataset.mid}`, { target: button, swap: "outerHTML" });
+      // The new messages went in above you: stay on the message you were reading.
+      scroller.scrollTop = scroller.scrollHeight - fromBottom;
+    } finally {
+      loadingOlder = false;
+    }
+  }
+  if (goToTop) scroller.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+// After you send, a chat that has its older messages loaded goes back to only the newest ones.
+function trimToRecent() {
+  const list = document.getElementById("messages");
+  const messages = list.querySelectorAll(":scope > .msg");
+  if (messages.length <= RECENT_MESSAGES) return;
+  // Remove everything above the first message we keep, including the notes and summary between them.
+  const firstKept = messages[messages.length - RECENT_MESSAGES];
+  while (list.firstElementChild !== firstKept) list.firstElementChild.remove();
+  // The same button ui.older_messages_button() draws.
+  const button = document.createElement("button");
+  button.type = "button";
+  button.id = "older-messages";
+  button.className = "btn btn-ghost older-btn";
+  button.textContent = "Show earlier messages";
+  button.onclick = () => showOlderMessages(false);
+  list.prepend(button);
+}
+
+function jumpToTop() {
+  showOlderMessages(true);
+}
+
+function jumpToBottom() {
+  const scroller = document.getElementById("scroller");
+  scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+}
+
+let lastScrollTop = 0;
+
+// Scroll events don't bubble, so listen in the capture phase to catch the chat's scroller.
+document.addEventListener("scroll", (e) => {
+  if (e.target.id !== "scroller") return;
+  const scroller = e.target;
+  // Only when you scroll up to the top yourself, not when the page jumps to the bottom on load.
+  const scrollingUp = scroller.scrollTop < lastScrollTop;
+  lastScrollTop = scroller.scrollTop;
+  if (scrollingUp && scroller.scrollTop < 150) showOlderMessages(false);
+  // Show the up / down arrows only once you've scrolled away from the newest message.
+  const fromBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+  document.getElementById("jump-btns")?.classList.toggle("show", fromBottom > 300);
+}, true);
+
 function toggleSidebar(open) {
   document.body.classList.toggle("sidebar-open", open);
 }
@@ -168,13 +237,17 @@ function showAttachmentPreview() {
   }
 }
 
-function resetComposer(form) {
-  form.reset();
-  const modeInput = document.getElementById("mode-input");
-  if (modeInput) modeInput.value = form.classList.contains("image-mode") ? "image" : "chat";
-  showAttachmentPreview();
+// Clear only the message box and attachments. Not form.reset(): on the new-chat page the same form holds
+// the system prompt, model and Lorekeeper switch, and a warning like "Type a message" must not wipe them.
+function resetComposer() {
   const input = document.getElementById("composer-input");
-  if (input) autoResize(input);
+  if (input) {
+    input.value = "";
+    autoResize(input);
+  }
+  const fileInput = document.getElementById("file-input");
+  if (fileInput) fileInput.value = "";
+  showAttachmentPreview();
 }
 
 document.addEventListener("keydown", (e) => {
@@ -228,12 +301,15 @@ document.addEventListener("input", (e) => {
 
 document.addEventListener("htmx:afterSwap", (e) => {
   startPendingStreams(document);
-  if (e.detail.target.id === "messages") scrollToBottom(true);
+  if (e.detail.target.id === "messages") {
+    trimToRecent();  // a send adds to the list; keep only the newest messages on the page
+    scrollToBottom(true);
+  }
 });
 
 document.addEventListener("htmx:afterRequest", (e) => {
   const form = e.detail.elt;
-  if (form.id === "composer" && e.detail.successful) resetComposer(form);
+  if (form.id === "composer" && e.detail.successful) resetComposer();
 });
 
 // Don't send while a reply is still streaming (keeps the conversation tree tidy).
